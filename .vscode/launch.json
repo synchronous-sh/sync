@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run synchronous on iPhone",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "/bin/zsh",
+      "runtimeArgs": ["${workspaceFolder}/scripts/run-on-iphone.sh"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}

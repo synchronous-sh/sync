@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>sh.synchronous.sync</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>synchronous</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>sync transcribes speech from videos you save so they can be searched in your library.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Used only to transcribe audio already in videos you share, not to record from the microphone.</string>
+</dict>
+</plist>
