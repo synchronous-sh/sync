@@ -1,4 +1,6 @@
 import Foundation
+import LinkPresentation
+import UIKit
 
 enum ArticleShare {
     @MainActor
@@ -12,7 +14,8 @@ enum ArticleShare {
                 if await publish(current) { break }
                 try? await Task.sleep(for: .milliseconds(400))
             }
-            SharePrompt.show([current.shareURL])
+            let image = await previewImage(for: current)
+            SharePrompt.show([SharePreviewItem(url: current.shareURL, title: current.title, image: image)])
         }
     }
 
@@ -20,8 +23,37 @@ enum ArticleShare {
     static func share(_ save: SaveItem) {
         Task { @MainActor in
             _ = await publish(save)
-            SharePrompt.show([shareURL(for: save)])
+            let image = await previewImage(for: save)
+            SharePrompt.show([SharePreviewItem(url: shareURL(for: save), title: save.title, image: image)])
         }
+    }
+
+    private static func previewImage(for post: FeedPost) async -> UIImage? {
+        if let image = FeedImageCache.image(for: post.id) { return image }
+        if !post.imageFileName.isEmpty,
+           let url = MediaStore.fileURL(post.imageFileName),
+           let image = UIImage(contentsOfFile: url.path) {
+            return image
+        }
+        return await FeedNews.loadFastImage(for: post)
+    }
+
+    private static func previewImage(for save: SaveItem) async -> UIImage? {
+        if let image = FeedImageCache.image(for: save.saveID) { return image }
+        if MediaStore.isVisualImage(save.imageFileName),
+           let url = MediaStore.fileURL(save.imageFileName),
+           let image = UIImage(contentsOfFile: url.path) {
+            return image
+        }
+        if let remote = URL(string: save.sourceURL), remote.scheme?.hasPrefix("http") == true,
+           let meta = await PageMeta.fetch(url: remote),
+           meta.imageURL.hasPrefix("http"),
+           let imageURL = URL(string: meta.imageURL),
+           let data = try? await URLSession.shared.data(from: imageURL).0,
+           let image = UIImage(data: data) {
+            return image
+        }
+        return nil
     }
 
     static func shareURL(for save: SaveItem) -> URL {
@@ -61,10 +93,13 @@ enum ArticleShare {
            let data = try? Data(contentsOf: file) {
             imageJPEG = Enrichment.jpegForModel(data)
         }
+        let source = await canonicalMediaURL(save.sourceURL)
         if imageJPEG == nil,
-           let source = URL(string: save.sourceURL), let meta = await PageMeta.fetch(url: source),
-           meta.imageURL.hasPrefix("http") {
-            imageURL = meta.imageURL
+           let remotePage = URL(string: source), let meta = await PageMeta.fetch(url: remotePage),
+           meta.imageURL.hasPrefix("http"),
+           let remote = URL(string: meta.imageURL) {
+            imageJPEG = await downloadedJPEG(remote)
+            if imageJPEG == nil { imageURL = meta.imageURL }
         }
         let post = FeedPost(
             id: save.saveID,
@@ -72,7 +107,7 @@ enum ArticleShare {
             title: save.title,
             script: body,
             headline: save.title,
-            headlineURL: save.sourceURL,
+            headlineURL: source,
             audioFileName: "",
             imageFileName: save.imageFileName,
             imageURL: imageURL,
@@ -86,13 +121,65 @@ enum ArticleShare {
     }
 
     static func publish(_ post: FeedPost) async -> Bool {
-        var jpeg: Data?
-        if post.imageURL.isEmpty,
-           let file = MediaStore.fileURL(post.imageFileName),
-           let data = try? Data(contentsOf: file) {
+        var jpeg = jpegFromDisk(post)
+        if jpeg == nil, let image = await previewImage(for: post),
+           let data = image.jpegData(compressionQuality: 0.82) {
             jpeg = Enrichment.jpegForModel(data)
         }
-        return await publish(post, imageJPEG: jpeg)
+        if jpeg == nil, let remote = URL(string: post.imageURL) {
+            jpeg = await downloadedJPEG(remote)
+        }
+        var outbound = post
+        if jpeg != nil { outbound.imageURL = "" }
+        outbound.headlineURL = await canonicalMediaURL(post.headlineURL)
+        return await publish(outbound, imageJPEG: jpeg)
+    }
+
+    private static func jpegFromDisk(_ post: FeedPost) -> Data? {
+        if let image = FeedImageCache.image(for: post.id),
+           let data = image.jpegData(compressionQuality: 0.82) {
+            return Enrichment.jpegForModel(data)
+        }
+        if !post.imageFileName.isEmpty,
+           let file = MediaStore.fileURL(post.imageFileName),
+           let data = try? Data(contentsOf: file) {
+            return Enrichment.jpegForModel(data)
+        }
+        return nil
+    }
+
+    private static func canonicalMediaURL(_ raw: String) async -> String {
+        guard let url = URL(string: raw) else { return raw }
+        let host = (url.host ?? "").lowercased()
+        if host.contains("tiktok.com") {
+            return await TikTokMedia.canonicalVideoURL(from: url).absoluteString
+        }
+        let path = url.path.lowercased()
+        let needsResolve =
+            host.contains("instagram.com") && (path.contains("/share/") || path.contains("/s/"))
+        guard needsResolve else { return raw }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        request.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let final = response.url else { return raw }
+        return final.absoluteString
+    }
+
+    private static func downloadedJPEG(_ url: URL) async -> Data? {
+        guard !FeedNews.isJunkPhoto(url) else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        request.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let jpeg = Enrichment.jpegForModel(data), jpeg.count > 800 else { return nil }
+        return jpeg
     }
 
     static func publish(_ post: FeedPost, imageJPEG: Data?) async -> Bool {
@@ -119,6 +206,10 @@ enum ArticleShare {
             "imageURL": post.imageURL,
             "publishedAt": iso.string(from: post.publishedAt)
         ]
+        if let source = URL(string: post.headlineURL),
+           let embed = MediaEmbed.webPlayer(for: source) {
+            body["embedURL"] = embed.absoluteString
+        }
         if let imageJPEG, !imageJPEG.isEmpty {
             body["imageBase64"] = imageJPEG.base64EncodedString()
         }
@@ -131,5 +222,38 @@ enum ArticleShare {
             return false
         }
         return true
+    }
+}
+
+final class SharePreviewItem: NSObject, UIActivityItemSource {
+    let url: URL
+    let title: String
+    let image: UIImage?
+
+    init(url: URL, title: String, image: UIImage?) {
+        self.url = url
+        self.title = title
+        self.image = image
+    }
+
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+        url
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController, itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
+        url
+    }
+
+    func activityViewControllerLinkMetadata(_ activityViewController: UIActivityViewController) -> LPLinkMetadata? {
+        let meta = LPLinkMetadata()
+        meta.originalURL = url
+        meta.url = url
+        meta.title = title
+        if let image {
+            let provider = NSItemProvider(object: image)
+            meta.imageProvider = provider
+            meta.iconProvider = provider
+        }
+        return meta
     }
 }

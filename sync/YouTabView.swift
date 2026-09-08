@@ -3,7 +3,10 @@ import SwiftData
 
 struct YouTabView: View {
     @Query(sort: \SaveItem.savedAt, order: .reverse) private var saves: [SaveItem]
+    @Environment(\.modelContext) private var modelContext
     @AppStorage(AccountSession.nameKey) private var displayName = ""
+    @AppStorage(AccountSession.usernameKey) private var username = ""
+    @AppStorage(AccountSession.bioKey) private var bio = ""
     @State private var tab: ProfileTab = .saved
 
     private enum ProfileTab: String, CaseIterable {
@@ -27,7 +30,12 @@ struct YouTabView: View {
                         Text(displayName.isEmpty ? "You" : displayName)
                             .font(.system(size: 20, weight: .bold))
                             .foregroundStyle(SyncTheme.ink)
-                        Text("Share from TikTok, YouTube, and the rest of the internet.")
+                        if !username.isEmpty {
+                            Text("@\(username)")
+                                .font(.system(size: 13))
+                                .foregroundStyle(SyncTheme.inkMuted)
+                        }
+                        Text(bio.isEmpty ? "Share from TikTok, YouTube, and the rest of the internet." : bio)
                             .font(.system(size: 13))
                             .foregroundStyle(SyncTheme.inkMuted)
                     }
@@ -109,8 +117,9 @@ struct YouTabView: View {
                         ForEach(LearningCatalog.paths) { path in
                             NavigationLink(value: Route.course(path.id)) {
                                 HStack(spacing: 12) {
-                                    CourseArtwork(pathID: path.id)
+                                    CourseArtwork(pathID: path.id, title: path.title)
                                         .frame(width: 64, height: 52)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                                     VStack(alignment: .leading, spacing: 6) {
                                         Text(path.title)
                                             .font(.system(size: 14, weight: .semibold))
@@ -160,6 +169,9 @@ struct YouTabView: View {
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 110)
+        }
+        .syncPullToRefresh {
+            LibraryBrain.pull(context: modelContext)
         }
         .background(SyncTheme.paper.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)

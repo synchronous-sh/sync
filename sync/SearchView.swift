@@ -20,14 +20,14 @@ struct SearchView: View {
     }
 
     private var storyResults: [FeedPost] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard q.count >= 2 else { return [] }
-        let local = stories.filter {
-            $0.title.lowercased().contains(q)
-                || $0.script.lowercased().contains(q)
-                || $0.interest.lowercased().contains(q)
-                || $0.sourceName.lowercased().contains(q)
-                || $0.headline.lowercased().contains(q)
+        let raw = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard raw.count >= 2 else { return [] }
+        let tokens = raw.lowercased().split(whereSeparator: \.isWhitespace).map(String.init).filter { $0.count >= 3 }
+        let local = stories.filter { post in
+            let hay = "\(post.title) \(post.script) \(post.interest) \(post.sourceName) \(post.headline)".lowercased()
+            if hay.contains(raw.lowercased()) { return true }
+            guard !tokens.isEmpty else { return false }
+            return tokens.contains { hay.contains($0) }
         }
         var seen = Set(liveStories.map(\.id))
         var out = liveStories
@@ -75,7 +75,7 @@ struct SearchView: View {
                 )
 
                 if fetchingNews, storyResults.isEmpty, query.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 {
-                    SparkleThinking(label: "Finding articles")
+                    SparkleThinking(label: "Finding articles", iconSize: 28, brandIcon: true)
                 }
 
                 if results.isEmpty, storyResults.isEmpty, !query.isEmpty, !fetchingNews {
@@ -142,23 +142,8 @@ struct SearchView: View {
                 embedded: true
             )
         }
-        .fullScreenCover(item: $openedStory) { post in
-            NavigationStack {
-                StoryDetailView(post: post)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button {
-                                openedStory = nil
-                            } label: {
-                                Image(systemName: "chevron.left")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(SyncTheme.ink)
-                            }
-                            .accessibilityLabel("Back")
-                        }
-                    }
-            }
-            .presentationBackground(SyncTheme.paper)
+        .navigationDestination(item: $openedStory) { post in
+            StoryDetailView(post: post)
         }
     }
 
@@ -170,7 +155,7 @@ struct SearchView: View {
             return
         }
         fetchingNews = true
-        try? await Task.sleep(for: .milliseconds(280))
+        try? await Task.sleep(for: .milliseconds(450))
         guard !Task.isCancelled else { return }
         let found = await FeedStudio.lookup(q)
         guard !Task.isCancelled else { return }

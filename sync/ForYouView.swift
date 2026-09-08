@@ -4,11 +4,34 @@ import AVFoundation
 import UIKit
 import Combine
 
+private enum ScreenSafe {
+    static var top: CGFloat { inset.top }
+    static var bottom: CGFloat { inset.bottom }
+
+    private static var inset: UIEdgeInsets {
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+        let window = windows.first(where: \.isKeyWindow) ?? windows.first
+        let value = window?.safeAreaInsets ?? .zero
+        return UIEdgeInsets(
+            top: max(value.top, 20),
+            left: value.left,
+            bottom: max(value.bottom, 16),
+            right: value.right
+        )
+    }
+}
+
 struct ForYouView: View {
     @Query(sort: \SaveItem.savedAt, order: .reverse) private var saves: [SaveItem]
     @State private var posts: [FeedPost] = FeedStore.load()
     @State private var loading = false
+    @State private var refreshing = false
+    @State private var bootstrapped = false
     @State private var loadingMore = false
+    @State private var nextMix: [FeedPost] = []
+    @State private var mixing = false
     @State private var message = ""
     @State private var currentID: UUID?
     @State private var feedJump = 0
@@ -19,69 +42,42 @@ struct ForYouView: View {
     @State private var askPost: FeedPost?
     @State private var openStory: FeedPost?
     @State private var showVoice = false
-    @State private var showSearch = false
     @State private var searchDraft = ""
+    @FocusState private var searchFocused: Bool
     @State private var searching = false
     @State private var searchError = ""
     @State private var showingCoach = false
+    @State private var category = "For You"
+    static var categoryCache: [String: [FeedPost]] = [:]
+    private static var categoryInflight: Set<String> = []
     @AppStorage(CoachTour.fypCompletedKey) private var completedFYPCoach = false
+    @AppStorage(CoachTour.fypRestartKey) private var restartFYPCoach = false
 
     var body: some View {
         Group {
             if posts.isEmpty && !loading {
                 empty
-                    .background(SyncTheme.paper.ignoresSafeArea())
             } else {
                 feed
             }
         }
-        .navigationTitle("For you")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(Color.black.ignoresSafeArea())
+        .background { KeyboardLiftLock() }
+        .toolbar(.hidden, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 2) {
-                    NavIconButton(accessibility: "Search topics") {
-                        showSearch = true
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 16, weight: .medium))
-                    }
-                    .coachSpot(.fypSearch)
-                    NavIconButton(accessibility: "Voice") {
-                        showVoice = true
-                    } label: {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 16, weight: .medium))
-                    }
-                    .coachSpot(.fypVoice)
-                    NavIconButton(accessibility: speaker.isMuted ? "Unmute" : "Mute") {
-                        speaker.toggleMute()
-                    } label: {
-                        Image(systemName: speaker.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            .font(.system(size: 16, weight: .medium))
-                    }
-                    .coachSpot(.fypMute)
-                    NavIconButton(accessibility: "Refresh") {
-                        guard !loading else { return }
-                        Task { await refresh() }
-                    } label: {
-                        if loading {
-                            ProgressView()
-                                .tint(SyncTheme.ink)
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 16, weight: .medium))
-                        }
-                    }
-                    .coachSpot(.fypRefresh)
-                }
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .overlay(alignment: .top) {
+            PinChromeTop {
+                videoChrome
             }
+            .frame(maxWidth: .infinity)
+            .fixedSize(horizontal: false, vertical: true)
         }
-        .coachTour(CoachTour.fyp, isPresented: $showingCoach, blocksTouches: false) {
+        .ignoresSafeArea(edges: .top)
+        .ignoresSafeArea(.keyboard)
+        .coachTour(CoachTour.fyp, isPresented: $showingCoach, onFinished: {
             completedFYPCoach = true
-        }
+        })
         .sheet(isPresented: $showVoice, onDismiss: {
             speaker.applyVoice()
         }) {
@@ -92,61 +88,6 @@ struct ForYouView: View {
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showSearch) {
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Type a topic, person, or place. We’ll pull the latest headlines and write briefings.")
-                        .font(.system(size: 15))
-                        .foregroundStyle(SyncTheme.inkMuted)
-                    HStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(SyncTheme.inkMuted)
-                        TextField("Lake Ontario, OpenAI, F1", text: $searchDraft)
-                            .textInputAutocapitalization(.words)
-                            .onSubmit { Task { await searchTopic() } }
-                        Button {
-                            Task { await searchTopic() }
-                        } label: {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 26))
-                                .foregroundStyle(canSearch ? SyncTheme.ink : SyncTheme.inkMuted)
-                        }
-                        .disabled(!canSearch)
-                        .accessibilityLabel("Find latest")
-                    }
-                    .padding(14)
-                    .background(SyncTheme.paperRaised)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(SyncTheme.line, lineWidth: 1)
-                    )
-                    if searching {
-                        SparkleThinking(label: "Finding the latest")
-                    }
-                    if !searchError.isEmpty {
-                        Text(searchError)
-                            .font(.system(size: 15))
-                            .foregroundStyle(SyncTheme.inkMuted)
-                    }
-                    Spacer()
-                }
-                .padding(20)
-                .background(SyncTheme.paper.ignoresSafeArea())
-                .navigationTitle("Search")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { showSearch = false }
-                            .fontWeight(.semibold)
-                            .foregroundStyle(SyncTheme.ink)
-                    }
-                }
-            }
-            .presentationDetents([.medium])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(SyncTheme.paper)
         }
         .sheet(item: $askPost) { post in
             FeedAskSheet(post: post, save: saves.first(where: { $0.saveID == post.saveID }))
@@ -166,15 +107,20 @@ struct ForYouView: View {
         }
         .onAppear {
             if openStory != nil || whySave != nil { return }
+            FYPStatusBar.install()
+            FYPStatusBar.wantsLightContent = true
+            startFYPCoachIfNeeded()
             if currentID == nil { currentID = posts.first?.id }
             if let id = currentID, let post = posts.first(where: { $0.id == id }) {
                 speakCard(post)
+                FeedPhotoBox.shared.ensure(post)
                 prefetchImages(around: id)
                 speaker.prefetch(nearbyPosts(around: id))
             }
         }
         .onDisappear {
-            if showVoice || showSearch || askPost != nil || openStory != nil { return }
+            if showVoice || searchFocused || askPost != nil || openStory != nil { return }
+            FYPStatusBar.wantsLightContent = false
             speaker.stop()
         }
         .onReceive(NotificationCenter.default.publisher(for: .feedVoiceDidChange)) { _ in
@@ -189,47 +135,229 @@ struct ForYouView: View {
             }
         }
         .task {
-            let all = FeedStore.load()
+            if bootstrapped { return }
+            bootstrapped = true
+            // #region agent log
+            let t0 = CFAbsoluteTimeGetCurrent()
+            AgentDebug.log("A", "ForYouView.swift:task", "fyp_task_start", ["stored": FeedStore.load().count])
+            // #endregion
+            TasteEngine.ingest(Array(saves))
+            AppWarmup.start(saves: Array(saves))
+            var all = FeedStore.load()
+            if all.isEmpty {
+                all = await FeedStudio.fill(from: saves, count: 12, replace: false)
+            }
             posts = all
+            // #region agent log
+            AgentDebug.log("A", "ForYouView.swift:task", "fyp_first_paint", ["ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000), "count": all.count])
+            // #endregion
+            if !all.isEmpty { Self.categoryCache["For You"] = all }
             if currentID == nil || !(posts.contains { $0.id == currentID }) {
                 currentID = posts.first?.id
             }
             if let id = currentID {
+                if let post = posts.first(where: { $0.id == id }) {
+                    FeedPhotoBox.shared.ensure(post)
+                }
                 prefetchImages(around: id)
-                Task { await expandNearby(around: id) }
             }
             if posts.isEmpty {
-                await refresh()
-            } else {
-                Task { await loadMore() }
+                await openFreshMix()
+            }
+            prefetchNearbyCategories()
+            Task {
+                await FeedStudio.ensureBriefings(Array(all.prefix(8)))
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(1.2))
+                await loadMore()
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(2.5))
+                await prefetchNextMix()
             }
         }
+        .onChange(of: restartFYPCoach) { _, on in
+            if on { startFYPCoachIfNeeded() }
+        }
+        .onChange(of: category) { _, next in
+            Task { await showCategory(next) }
+        }
+    }
+
+    private func startFYPCoachIfNeeded() {
+        guard restartFYPCoach || (!completedFYPCoach && !showingCoach) else { return }
+        let replay = restartFYPCoach
+        restartFYPCoach = false
+        Task { @MainActor in
+            if replay { try? await Task.sleep(for: .milliseconds(250)) }
+            showingCoach = true
+        }
+    }
+
+    private var videoChrome: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                if loading || refreshing {
+                    SparkleThinking(label: "", iconSize: 32, inverted: true, brandIcon: true)
+                        .frame(width: 32, height: 32)
+                        .accessibilityLabel("Loading")
+                } else {
+                    chromeButton("arrow.clockwise", "Reload") {
+                        searchError = ""
+                        Task {
+                            if category == "For You" {
+                                await refresh()
+                            } else {
+                                await showCategory(category, force: true)
+                            }
+                        }
+                    }
+                    .coachSpot(.fypRefresh)
+                }
+                HStack(spacing: 8) {
+                    Button {
+                        Task { await searchTopic(replace: true) }
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.62))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Search")
+                    TextField(
+                        "",
+                        text: $searchDraft,
+                        prompt: Text("Ask for stories").foregroundStyle(Color.white.opacity(0.72))
+                    )
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 15))
+                        .foregroundStyle(.white)
+                        .tint(.white)
+                        .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($searchFocused)
+                        .submitLabel(searchDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .done : .search)
+                        .onSubmit {
+                            if searchDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                searchFocused = false
+                            } else {
+                                Task { await searchTopic(replace: true) }
+                            }
+                        }
+                    Color.clear
+                        .frame(width: 18, height: 18)
+                        .overlay {
+                            if searching {
+                                SparkleThinking(label: "", iconSize: 13, inverted: true)
+                            } else if !searchDraft.isEmpty {
+                                Button {
+                                    searchDraft = ""
+                                    searchError = ""
+                                    Task { await showCategory(category) }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.white.opacity(0.5))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Clear search")
+                            }
+                        }
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .background(Color.white.opacity(0.14))
+                .clipShape(Capsule())
+                .colorScheme(.dark)
+                .coachSpot(.fypSearch)
+                chromeButton("waveform", "Voice") { showVoice = true }
+                    .coachSpot(.fypVoice)
+                chromeButton(speaker.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", speaker.isMuted ? "Unmute" : "Mute") {
+                    speaker.toggleMute()
+                }
+                .coachSpot(.fypMute)
+            }
+            .padding(.horizontal, 10)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 16) {
+                    ForEach(NewsCategories.feed, id: \.self) { item in
+                        Button {
+                            guard category != item else { return }
+                            category = item
+                        } label: {
+                            VStack(spacing: 4) {
+                                Text(item)
+                                    .font(.system(size: 14, weight: category == item ? .bold : .semibold))
+                                    .foregroundStyle(category == item ? Color.white : Color.white.opacity(0.58))
+                                Capsule()
+                                    .fill(category == item ? Color.white : Color.clear)
+                                    .frame(width: 22, height: 2)
+                            }
+                            .frame(height: 28)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14)
+            }
+            if !searchError.isEmpty {
+                Text(searchError)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 4)
+            }
+        }
+        .padding(.top, ScreenSafe.top + 6)
+        .background {
+            LinearGradient(
+                colors: [.black.opacity(0.55), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+        }
+        .animation(nil, value: searchFocused)
+    }
+
+    private func chromeButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+        }
+        .accessibilityLabel(label)
+        .buttonStyle(.plain)
     }
 
     private var empty: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("A feed from what you save.")
-                    .font(.system(size: 28, weight: .semibold, design: .serif))
-                    .foregroundStyle(SyncTheme.ink)
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(.white)
                 Text(hint)
                     .font(.system(size: 16))
-                    .foregroundStyle(SyncTheme.inkMuted)
+                    .foregroundStyle(.white.opacity(0.6))
 
                 Button("Make posts") {
                     Task { await refresh() }
                 }
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(SyncTheme.paper)
+                .foregroundStyle(.black)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
-                .background(SyncTheme.ink)
+                .background(Color.white)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .disabled(loading)
             }
             .padding(24)
+            .padding(.top, 120)
         }
-        .syncPullToRefresh { await refresh() }
+        .background(Color.black.ignoresSafeArea())
     }
 
     private var hint: String {
@@ -254,74 +382,268 @@ struct ForYouView: View {
             onAsk: { id in askPost = posts.first(where: { $0.id == id }) },
             onOpen: { id in
                 speaker.stop()
-                openStory = posts.first(where: { $0.id == id })
+                if let stored = FeedStore.load().first(where: { $0.id == id }),
+                   !FeedStudio.isPlaceholder(stored) {
+                    openStory = stored
+                } else {
+                    openStory = posts.first(where: { $0.id == id })
+                }
             },
             onMute: { speaker.toggleMute() },
             onNeedMore: { Task { await loadMore() } },
             onRefresh: { await refresh() },
             scrollNonce: feedJump,
-            reveal: revealBox.post
+            reveal: revealBox.post,
+            darkCanvas: true
         )
+        .equatable()
         .ignoresSafeArea()
-        .background(SyncTheme.paper.ignoresSafeArea())
-        .overlay {
-            if loading && posts.isEmpty {
-                SparkleThinking(label: searching ? "Finding the latest" : "Loading stories")
-                    .allowsHitTesting(false)
-            }
-        }
+        .background(Color.black.ignoresSafeArea())
         .onChange(of: currentID) { _, id in
             if openStory != nil { return }
             guard let id, let post = posts.first(where: { $0.id == id }) else { return }
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(120))
-                guard currentID == id, openStory == nil else { return }
-                speakCard(post)
-                prefetchImages(around: id)
-                speaker.prefetch(nearbyPosts(around: id))
-            }
+            // #region agent log
+            AgentDebug.log("C", "ForYouView.swift:currentID", "page", [
+                "id": id.uuidString,
+                "idx": posts.firstIndex(where: { $0.id == id }) ?? -1
+            ])
+            // #endregion
+            speakCard(post)
+            prefetchImages(around: id)
+            Task { await expandNearby(around: id) }
         }
         .onChange(of: posts.count) { _, _ in
             if let id = currentID { prefetchImages(around: id) }
         }
     }
 
-    private func refresh() async {
-        guard !loading else { return }
+    private func showCategory(_ name: String, force: Bool = false) async {
+        searching = false
+        searchError = ""
+        let t0 = CFAbsoluteTimeGetCurrent()
+        if !force, let cached = Self.categoryCache[name], !cached.isEmpty {
+            applyCategoryPosts(cached)
+            // #region agent log
+            AgentDebug.log("B", "ForYouView.showCategory", "memory", [
+                "name": name,
+                "ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000),
+                "n": cached.count
+            ])
+            // #endregion
+            if let id = cached.first?.id {
+                Task { await expandNearby(around: id) }
+            }
+            prefetchNearbyCategories()
+            return
+        }
+        await loadCategory(name, force: force)
+        prefetchNearbyCategories()
+    }
+
+    private func applyCategoryPosts(_ next: [FeedPost]) {
+        posts = next
+        currentID = next.first?.id
+        feedJump += 1
+        if let first = next.first {
+            FeedPhotoBox.shared.ensure(first)
+            speakCard(first)
+            prefetchImages(around: first.id)
+            Task { await FeedStudio.ensureBriefings(Array(next.prefix(8))) { adoptBriefing($0) } }
+        }
+    }
+
+    private func prefetchNearbyCategories() {
+        let others = Array(NewsCategories.feed.filter { $0 != category }.prefix(2))
+        for name in others {
+            guard Self.categoryCache[name] == nil, !Self.categoryInflight.contains(name) else { continue }
+            Self.categoryInflight.insert(name)
+            Task(priority: .utility) {
+                let found = await fetchCategoryPosts(name)
+                if !found.isEmpty {
+                    Self.categoryCache[name] = found
+                    FeedImageCache.prefetch(Array(found.prefix(2)))
+                }
+                Self.categoryInflight.remove(name)
+            }
+        }
+    }
+
+    private func openFreshMix() async {
+        if category != "For You" {
+            await showCategory(category, force: true)
+            return
+        }
         loading = true
-        defer { loading = false }
         message = ""
-        speaker.stop()
         var batch: [FeedPost] = []
-        let next = await FeedStudio.fill(from: saves, count: 12, replace: true) { post in
+        let next = await FeedStudio.fill(from: saves, count: 12, replace: true, resetSeen: false) { post in
             batch.append(post)
             posts = batch
-            loading = false
-            if currentID == nil || !batch.contains(where: { $0.id == currentID }) {
+            if batch.count == 1 {
                 currentID = post.id
                 feedJump += 1
                 speakCard(post)
                 speaker.prefetch([post])
+                FeedPhotoBox.shared.ensure(post)
             }
             if let id = currentID {
                 prefetchImages(around: id)
             }
         }
         if posts.isEmpty { posts = next }
-        if next.isEmpty {
-            message = saves.isEmpty
-                ? "Couldn’t load stories just now. Try Make posts again."
-                : "No fresh headlines for your interests yet. Save more specific artists, names, or topics, then refresh."
+        loading = false
+        if !posts.isEmpty {
+            Self.categoryCache["For You"] = posts
+            Task { await loadMore() }
+            if let id = currentID ?? posts.first?.id {
+                Task { await expandNearby(around: id) }
+            }
+        }
+    }
+
+    private func fetchCategoryPosts(_ name: String) async -> [FeedPost] {
+        if name == "For You" {
+            let stored = FeedStore.load()
+            return stored.isEmpty ? await FeedStudio.fill(from: saves, count: 12, replace: false) : stored
+        }
+        return await FeedStudio.posts(forCategory: name, count: 10)
+    }
+
+    private func loadCategory(_ name: String? = nil, force: Bool = false) async {
+        let target = name ?? category
+        if !force, let cached = Self.categoryCache[target], !cached.isEmpty {
+            if category == target { applyCategoryPosts(cached) }
+            return
+        }
+        if target == "For You" {
+            await refresh()
+            if !posts.isEmpty { Self.categoryCache["For You"] = posts }
+            return
+        }
+        message = ""
+        speaker.stop()
+        let t0 = CFAbsoluteTimeGetCurrent()
+        loading = Self.categoryCache[target] == nil
+        let found = await FeedStudio.posts(forCategory: target, count: 10)
+        Self.categoryCache[target] = found
+        // #region agent log
+        AgentDebug.log("B", "ForYouView.loadCategory", "done", [
+            "name": target,
+            "ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000),
+            "n": found.count
+        ])
+        // #endregion
+        if category == target {
+            loading = false
+            if found.isEmpty {
+                message = "No fresh headlines for \(target) yet."
+            } else {
+                applyCategoryPosts(found)
+            }
+            if let id = found.first?.id {
+                Task { await expandNearby(around: id) }
+            }
         }
         loading = false
-        if !posts.isEmpty { Task { await loadMore() } }
+    }
+
+    private func applyInstantFeed(_ next: [FeedPost]) {
+        guard !next.isEmpty else { return }
+        posts = next
+        currentID = next.first?.id
+        feedJump += 1
+        Self.categoryCache[category] = next
+        if let first = next.first {
+            FeedPhotoBox.shared.ensure(first)
+            speakCard(first)
+            prefetchImages(around: first.id)
+            speaker.prefetch(Array(next.prefix(3)))
+        }
+    }
+
+    private func consumeFreshStack() -> [FeedPost]? {
+        let current = Set(posts.prefix(1).map(\.id))
+        let buffered = nextMix.filter { !current.contains($0.id) }
+        if buffered.count >= 2 {
+            nextMix = []
+            return buffered
+        }
+        let idx = currentID.flatMap { id in posts.firstIndex(where: { $0.id == id }) } ?? 0
+        let rest = Array(posts.dropFirst(idx + 1))
+        if rest.count >= 2 {
+            return rest
+        }
+        if !buffered.isEmpty { nextMix = []; return buffered }
+        if rest.count == 1 { return rest }
+        return nil
+    }
+
+    private func prefetchNextMix() async {
+        guard !mixing, category == "For You" else { return }
+        mixing = true
+        defer { mixing = false }
+        let have = Set(posts.map(\.id) + nextMix.map(\.id))
+        _ = await FeedStudio.fill(from: saves, count: 8, replace: false)
+        let extra = FeedStore.load().filter { !have.contains($0.id) }
+        if extra.count >= 2 {
+            nextMix = Array(extra.prefix(12))
+            FeedImageCache.prefetch(Array(nextMix.prefix(4)))
+        }
+    }
+
+    private func refresh() async {
+        refreshing = true
+        defer { refreshing = false }
+        // #region agent log
+        let t0 = CFAbsoluteTimeGetCurrent()
+        AgentDebug.log("A", "ForYouView.swift:refresh", "refresh_start", ["posts": posts.count, "mix": nextMix.count])
+        // #endregion
+        message = ""
+        speaker.stop()
+        if let fresh = consumeFreshStack() {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            applyInstantFeed(fresh)
+            // #region agent log
+            AgentDebug.log("A", "ForYouView.swift:refresh", "refresh_instant", ["ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000), "n": fresh.count])
+            // #endregion
+            Task { await prefetchNextMix() }
+            if let id = currentID {
+                Task { await expandNearby(around: id) }
+            }
+            return
+        }
+        var first = true
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            var resumed = false
+            func finish() {
+                guard !resumed else { return }
+                resumed = true
+                cont.resume()
+            }
+            Task { @MainActor in
+                _ = await FeedStudio.fill(from: saves, count: 8, replace: false, skipHistory: false) { post in
+                    if first {
+                        first = false
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        applyInstantFeed([post] + posts.filter { $0.id != post.id })
+                        finish()
+                    }
+                }
+                Task { await prefetchNextMix() }
+                if let id = currentID {
+                    Task { await expandNearby(around: id) }
+                }
+                AgentDebug.log("A", "ForYouView.swift:refresh", "refresh_fill_done", ["ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)])
+                finish()
+            }
+        }
     }
 
     private var canSearch: Bool {
         searchDraft.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 && !searching
     }
 
-    private func searchTopic() async {
+    private func searchTopic(replace: Bool = false) async {
         let q = searchDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard q.count >= 2, !searching else { return }
         searching = true
@@ -329,22 +651,26 @@ struct ForYouView: View {
         searchError = ""
         message = ""
         speaker.stop()
+        if replace {
+            posts = []
+            currentID = nil
+        }
         var batch: [FeedPost] = []
         let found = await FeedStudio.search(q, count: 8) { post in
             batch.append(post)
-            posts = batch + posts.filter { existing in
+            posts = replace ? batch : batch + posts.filter { existing in
                 !batch.contains { FeedStore.isSameStory($0.headline, existing.headline) }
             }
             if batch.count == 1 {
                 currentID = post.id
                 feedJump += 1
                 speaker.speak(post)
-                showSearch = false
+                searchFocused = false
             }
             prefetchImages(around: post.id)
         }
         if !found.isEmpty {
-            posts = found + posts.filter { existing in
+            posts = replace ? found : found + posts.filter { existing in
                 !found.contains { FeedStore.isSameStory($0.headline, existing.headline) }
             }
             currentID = found.first?.id
@@ -353,17 +679,24 @@ struct ForYouView: View {
                 speaker.speak(first)
                 speaker.prefetch(Array(found.prefix(3)))
             }
-            showSearch = false
+            searchFocused = false
+            if let id = found.first?.id {
+                Task { await expandNearby(around: id) }
+            }
         } else {
-            searchError = "No fresh headlines for that yet. Try a more specific name or topic."
+            searchError = "Nothing matched that. Try naming a person, company, or what you want to understand."
         }
         searching = false
         loading = false
     }
 
     private func speakCard(_ post: FeedPost) {
+        if revealBox.post?.id == post.id, speaker.playingThis(post.id) {
+            return
+        }
         var spoken = post
-        if let stored = FeedStore.load().first(where: { $0.id == post.id }),
+        if revealBox.post?.id != post.id,
+           let stored = FeedStore.load().first(where: { $0.id == post.id }),
            !FeedStudio.needsBriefing(stored) {
             spoken = stored
         }
@@ -377,52 +710,91 @@ struct ForYouView: View {
         return Array(posts[index..<end])
     }
 
+    private func adoptBriefing(_ next: FeedPost) {
+        if next.id == currentID {
+            // #region agent log
+            AgentDebug.log("T", "ForYouView.swift:adoptBriefing", "skip_visible", [
+                "id": next.id.uuidString,
+                "ready": next.briefingReady
+            ])
+            // #endregion
+            return
+        }
+        // #region agent log
+        AgentDebug.log("T", "ForYouView.swift:adoptBriefing", "apply_ahead", [
+            "id": next.id.uuidString,
+            "len": next.script.count
+        ])
+        // #endregion
+        if let i = posts.firstIndex(where: { $0.id == next.id }) {
+            posts[i] = next
+        }
+        if var cached = Self.categoryCache[category],
+           let i = cached.firstIndex(where: { $0.id == next.id }) {
+            cached[i] = next
+            Self.categoryCache[category] = cached
+        }
+    }
+
     private func expandNearby(around id: UUID) async {
         guard let index = posts.firstIndex(where: { $0.id == id }) else { return }
-        let end = min(posts.count, index + 4)
-        let slice = Array(posts[index..<end])
-        await FeedStudio.ensureBriefings(slice, prefer: id)
+        let start = max(0, index)
+        let end = min(posts.count, index + 8)
+        guard start < end else { return }
+        let slice = Array(posts[start..<end])
+        let t0 = CFAbsoluteTimeGetCurrent()
+        // #region agent log
+        AgentDebug.log("T", "ForYouView.swift:expandNearby", "prefetch", [
+            "from": start,
+            "to": end,
+            "n": slice.count
+        ])
+        // #endregion
+        await FeedStudio.ensureBriefings(slice) { adoptBriefing($0) }
+        // #region agent log
+        AgentDebug.log("C", "ForYouView.swift:expandNearby", "done", [
+            "ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000),
+            "n": slice.count
+        ])
+        // #endregion
         let stored = FeedStore.load()
-        for i in index..<end where i < posts.count {
-            if speaker.playingThis(posts[i].id) { continue }
+        for i in start..<end where i < posts.count {
             if let next = stored.first(where: { $0.id == posts[i].id }),
                next.script != posts[i].script || next.briefingReady != posts[i].briefingReady {
-                posts[i] = next
+                adoptBriefing(next)
             }
-        }
-        if let open = openStory, let next = stored.first(where: { $0.id == open.id }) {
-            openStory = next
         }
     }
 
     private func prefetchImages(around id: UUID) {
         guard let index = posts.firstIndex(where: { $0.id == id }) else { return }
-        let end = min(posts.count, index + 8)
+        let end = min(posts.count, index + 4)
         FeedImageCache.prefetch(Array(posts[index..<end]))
     }
 
     private func loadMore() async {
+        guard openStory == nil, whySave == nil else { return }
         guard !loadingMore else { return }
+        let index = currentID.flatMap { id in posts.firstIndex(where: { $0.id == id }) } ?? 0
+        if posts.count - index >= 8 { return }
         loadingMore = true
         defer { loadingMore = false }
-        var emptyStreak = 0
-        while true {
-            let index = currentID.flatMap { id in posts.firstIndex(where: { $0.id == id }) } ?? 0
-            if posts.count - index >= 20 { break }
-            let beforeIDs = Set(posts.map(\.id))
-            _ = await FeedStudio.fill(from: saves, count: 8)
-            let added = FeedStore.load().filter { !beforeIDs.contains($0.id) }
-            if !added.isEmpty {
-                posts.append(contentsOf: added)
-            }
-            if currentID == nil { currentID = posts.first?.id }
-            if added.isEmpty {
-                emptyStreak += 1
-                if emptyStreak >= 2 { break }
-            } else {
-                emptyStreak = 0
-            }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let beforeIDs = Set(posts.map(\.id))
+        _ = await FeedStudio.fill(from: saves, count: 6)
+        let added = FeedStore.load().filter { !beforeIDs.contains($0.id) }
+        // #region agent log
+        AgentDebug.log("C", "ForYouView.swift:loadMore", "done", [
+            "ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000),
+            "added": added.count,
+            "idx": index,
+            "n": posts.count
+        ])
+        // #endregion
+        if !added.isEmpty {
+            posts.append(contentsOf: added)
         }
+        if currentID == nil { currentID = posts.first?.id }
     }
 }
 
@@ -430,7 +802,7 @@ struct ForYouView: View {
 final class FeedSpeaker: ObservableObject {
     @Published var isMuted = false
     @Published var isPaused = false
-    @Published var isPlaying = false
+    var isPlaying = false
     private var player: AVPlayer?
     private let synth = AVSpeechSynthesizer()
     var playingID: UUID?
@@ -447,15 +819,37 @@ final class FeedSpeaker: ObservableObject {
     func speak(_ post: FeedPost, force: Bool = false, full: Bool = false) {
         let voice = ElevenLabsSpeech.voiceID
         if !force, playingID == post.id, spokenVoice == voice, lastFull == full, player != nil || synth.isSpeaking { return }
+        // #region agent log
+        AgentDebug.log("F", "ForYouView.swift:speak", "speak_start", ["id": post.id.uuidString])
+        // #endregion
         stop()
         playingID = post.id
         lastPost = post
         lastFull = full
         spokenVoice = voice
         if isPaused { isPaused = false }
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        Self.activateAudio()
         startAudio(post, voice: voice, skipCache: force, full: full)
+    }
+
+    func speakRaw(_ text: String, id: UUID, force: Bool = false) {
+        speak(
+            FeedPost(
+                id: id,
+                saveID: id,
+                title: "",
+                script: text,
+                headline: "",
+                headlineURL: "",
+                audioFileName: "",
+                imageFileName: "",
+                sourceName: "",
+                interest: "",
+                createdAt: .now
+            ),
+            force: force,
+            full: true
+        )
     }
 
     func toggleReadAloud(_ post: FeedPost) {
@@ -466,10 +860,18 @@ final class FeedSpeaker: ObservableObject {
         speak(post, full: true)
     }
 
+    private static var audioReady = false
+    private static func activateAudio() {
+        guard !audioReady else { return }
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        audioReady = true
+    }
+
     func prefetch(_ posts: [FeedPost]) {
         let voice = ElevenLabsSpeech.voiceID
         guard ElevenLabsKey.isConfigured else { return }
-        for post in posts.prefix(3) where !post.cardBlurb.isEmpty {
+        for post in posts.prefix(1) where !post.cardBlurb.isEmpty {
             if ElevenLabsSpeech.cachedURL(id: post.id, voice: voice, text: post.cardBlurb) != nil { continue }
             Task {
                 _ = await ElevenLabsSpeech.speak(post.cardBlurb, id: post.id, voice: voice)
@@ -607,109 +1009,80 @@ struct FeedCard: View {
     var articleSaved = false
     var onWhy: ((UUID) -> Void)? = nil
     var onAsk: ((UUID) -> Void)? = nil
+    var onOpen: ((UUID) -> Void)? = nil
     var onMute: (() -> Void)? = nil
     @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var photos = FeedPhotoBox.shared
     @State private var remote: UIImage?
-    @State private var page: InAppPage?
     @State private var confirmingUnsave = false
     @State private var savedHere = false
     @State private var savedID: UUID?
-    @Environment(\.colorScheme) private var colorScheme
+    @State private var showMore = false
 
     var body: some View {
         GeometryReader { geo in
-            let half = geo.size.height / 2
-            VStack(spacing: 0) {
-                photo(in: geo.size.width, height: half)
-                    .frame(width: geo.size.width, height: half, alignment: .bottom)
+            ZStack(alignment: .bottom) {
+                Color.black
+                photo(in: geo.size.width, height: geo.size.height)
+                    .frame(width: geo.size.width, height: geo.size.height)
                     .clipped()
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(TapGesture().onEnded { onMute?() })
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text((post.sourceName.isEmpty ? post.interest : post.sourceName).uppercased() + "  ·  " + FeedNews.dateLine(post.publishedAt).uppercased())
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(mutedCopy)
-                        .tracking(0.6)
-                    Text(post.title)
-                        .font(.system(size: 26, weight: .semibold, design: .serif))
-                        .foregroundStyle(copy)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(post.cardBlurb)
-                        .font(.system(size: 16))
-                        .foregroundStyle(copy.opacity(0.92))
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 12) {
-                        if let url = URL(string: post.headlineURL), !post.headlineURL.isEmpty {
-                            Button("Read source") {
-                                if !OutboundLink.open(url) {
-                                    page = InAppPage(id: url)
-                                }
-                            }
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(colorScheme == .dark ? .black : SyncTheme.paper)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(colorScheme == .dark ? Color.white : SyncTheme.ink)
-                                .clipShape(Capsule())
-                        }
-                        Button {
-                            ArticleShare.share(post)
-                        } label: {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundStyle(colorScheme == .dark ? .black : SyncTheme.paper)
-                                .frame(width: 36, height: 36)
-                                .background(colorScheme == .dark ? Color.white : SyncTheme.ink)
-                                .clipShape(Circle())
-                        }
-                        .accessibilityLabel("Share")
-                        Button {
-                            if isSaved {
-                                confirmingUnsave = true
-                            } else {
-                                saveNews(note: "", collectionName: "")
-                            }
-                        } label: {
-                            Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundStyle(colorScheme == .dark ? .black : SyncTheme.paper)
-                                .frame(width: 36, height: 36)
-                                .background(colorScheme == .dark ? Color.white : SyncTheme.ink)
-                                .clipShape(Circle())
-                        }
-                        .accessibilityLabel(isSaved ? "Remove from library" : "Save to library")
-                        Button {
-                            onAsk?(post.id)
-                        } label: {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundStyle(colorScheme == .dark ? .black : SyncTheme.paper)
-                                .frame(width: 36, height: 36)
-                                .background(colorScheme == .dark ? Color.white : SyncTheme.ink)
-                                .clipShape(Circle())
-                        }
-                        .accessibilityLabel("Ask about this")
-                        if let save {
-                            Button("Why this") { onWhy?(save.saveID) }
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(copy)
-                        }
-                    }
+                    .allowsHitTesting(false)
+                if !photoReady {
+                    SparkleThinking(label: "", iconSize: 96, inverted: true, brandIcon: true)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                        .allowsHitTesting(false)
+                        .accessibilityLabel("Loading image")
                 }
-                .padding(.horizontal, 22)
-                .padding(.top, 20)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .frame(width: geo.size.width, height: half, alignment: .topLeading)
-                .clipped()
-                .background(letterbox)
+
+                Color.clear
+                    .frame(width: min(220, geo.size.width * 0.52), height: min(280, geo.size.height * 0.38))
+                    .contentShape(Rectangle())
+                    .onTapGesture { onMute?() }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .padding(.trailing, 56)
+                    .padding(.bottom, 90)
+
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.55)],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
+                .allowsHitTesting(false)
+
+                HStack(alignment: .bottom, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(post.title)
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.9), radius: 5)
+                            .lineLimit(2)
+                        Text(post.cardBlurb)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .shadow(color: .black, radius: 4)
+                            .lineLimit(3)
+                        Text(publisher)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white.opacity(0.62))
+                            .shadow(color: .black, radius: 4)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.trailing, 8)
+
+                    chromeActions
+                }
+                .padding(.leading, 18)
+                .padding(.trailing, 9)
+                .padding(.bottom, ScreenSafe.bottom + 64)
             }
-            .contentShape(Rectangle())
         }
-        .background(letterbox)
-        .sheet(item: $page) { page in
-            SafariTab(url: page.url)
-                .ignoresSafeArea()
+        .background(Color.black)
+        .sheet(isPresented: $showMore) {
+            FeedMoreSheet(post: post, onAsk: { onAsk?(post.id) }, onWhy: { if let save { onWhy?(save.saveID) } })
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Color.black)
         }
         .confirmationDialog("Remove from library?", isPresented: $confirmingUnsave, titleVisibility: .visible) {
             Button("Remove", role: .destructive) { unsaveNews() }
@@ -717,55 +1090,151 @@ struct FeedCard: View {
         } message: {
             Text("This save will be deleted.")
         }
-        .task {
-            if let cached = FeedImageCache.image(for: post.id) {
-                remote = cached
-                return
+        .onAppear {
+            syncChrome()
+            FeedPhotoBox.shared.ensure(post)
+        }
+        .task(id: post.id) {
+            savedHere = false
+            savedID = nil
+            syncChrome()
+            FeedPhotoBox.shared.ensure(post)
+        }
+    }
+
+    private var chromeActions: some View {
+        VStack(spacing: 7) {
+            feedAction(isSaved ? "bookmark.fill" : "bookmark", isSaved ? "Remove from library" : "Save") {
+                if isSaved { confirmingUnsave = true } else { saveNews() }
             }
-            if let image = await FeedNews.loadFastImage(for: post) {
-                remote = image
+            feedAction("sparkles", "Ask") {
+                onAsk?(post.id)
             }
+            feedAction("book", "Read news summary") {
+                onOpen?(post.id)
+            }
+            feedAction("paperplane", "Share") {
+                ArticleShare.share(post)
+            }
+            Button {
+                showMore = true
+            } label: {
+                VStack(spacing: 5) {
+                    Capsule().fill(.white.opacity(0.96)).frame(width: 23, height: 2)
+                    Capsule().fill(.white.opacity(0.96)).frame(width: 14, height: 2)
+                }
+                .frame(width: 44, height: 35)
+            }
+            .accessibilityLabel("More options")
+            .buttonStyle(.plain)
+
+            Button {
+                onOpen?(post.id)
+            } label: {
+                VStack(spacing: 3) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(.white)
+                            .frame(width: 29, height: 29)
+                        Text(String(publisher.prefix(1)).uppercased())
+                            .font(.system(size: 11, weight: .heavy))
+                            .foregroundStyle(.black)
+                    }
+                    Text(publisher)
+                        .font(.system(size: 7, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
+                        .frame(maxWidth: 47)
+                }
+                .frame(width: 48)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open \(publisher) news summary")
         }
     }
 
     @ViewBuilder
     private func photo(in width: CGFloat, height: CGFloat) -> some View {
-        ZStack(alignment: .bottom) {
-            letterbox
-            if let image = localImage ?? remote {
-                let landscape = image.size.width > image.size.height + 1
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: landscape ? .fit : .fill)
-                    .frame(width: width, height: max(height - 40, 80), alignment: .bottom)
-                    .clipped()
-                    .padding(.bottom, 20)
-            } else {
-                letterbox
-                    .padding(.bottom, 20)
-            }
+        FeedBackdrop(post: post)
+            .frame(width: width, height: height)
+            .clipped()
+    }
+
+    @ViewBuilder
+    private func filledPhoto(_ image: UIImage, width: CGFloat, height: CGFloat) -> some View {
+        let imageRatio = image.size.width / max(image.size.height, 1)
+        let frameRatio = width / max(height, 1)
+        let isWide = imageRatio > frameRatio + 0.04
+        if isWide {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: width, height: height)
+                .blur(radius: 26)
+                .opacity(0.42)
+                .clipped()
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: width, height: height)
+        } else {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: width, height: height)
+                .clipped()
         }
     }
 
-    private var copy: Color {
-        SyncTheme.ink
+    private var publisher: String {
+        let name = post.sourceName.isEmpty ? (post.interest.isEmpty ? "News" : post.interest) : post.sourceName
+        return name.split(separator: "·").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? name
     }
 
-    private var mutedCopy: Color {
-        SyncTheme.inkMuted
-    }
-
-    private var letterbox: Color {
-        SyncTheme.paper
-    }
-
-    private var localImage: UIImage? {
-        FeedImageCache.image(for: post.id)
+    private var photoReady: Bool {
+        _ = photos.generation
+        let title = post.title.isEmpty ? post.headline : post.title
+        let artID = FeedNews.photoID(url: post.headlineURL, title: title)
+        let cache = FeedImageCache.image(for: artID) != nil || FeedImageCache.image(for: post.id) != nil
+        let pack = StudioPack.image(for: artID) != nil
+        // #region agent log
+        if !cache {
+            AgentDebug.log("E", "FeedCard.photoReady", "waiting", [
+                "cache": cache,
+                "pack": pack
+            ])
+        }
+        // #endregion
+        return cache
     }
 
     private var isSaved: Bool { articleSaved || savedHere }
 
-    private func saveNews(note: String, collectionName: String) {
+    private func syncChrome() {}
+
+    private func feedAction(_ symbol: String, _ label: String, count: String? = nil, action: @escaping () -> Void) -> some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            action()
+        } label: {
+            VStack(spacing: 1) {
+                Image(systemName: symbol)
+                    .font(.system(size: 24, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.96))
+                    .shadow(color: .black.opacity(0.4), radius: 4)
+                if let count {
+                    Text(count)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(minWidth: 44, minHeight: 43)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private func saveNews() {
         guard !isSaved else { return }
         let briefing = post.script.trimmingCharacters(in: .whitespacesAndNewlines)
         let url = post.headlineURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -783,25 +1252,10 @@ struct FeedCard: View {
         if result.save.topicsCSV.isEmpty, !post.interest.isEmpty {
             result.save.topicsCSV = post.interest
         }
-        if result.save.imageFileName.isEmpty, let data = (localImage ?? remote)?.jpegData(compressionQuality: 0.85) {
+        if result.save.imageFileName.isEmpty,
+           let image = FeedImageCache.image(for: post.id) ?? remote,
+           let data = image.jpegData(compressionQuality: 0.85) {
             result.save.imageFileName = MediaStore.save(data, id: result.save.saveID)
-        }
-        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedNote.isEmpty {
-            result.save.rawText = SaveNote.merging(trimmedNote, into: result.save.rawText)
-        }
-        let bag = collectionName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !bag.isEmpty {
-            let bags = (try? modelContext.fetch(FetchDescriptor<CollectionItem>())) ?? []
-            if let existing = CollectionHousekeeping.match(bag, in: bags) {
-                if !result.save.collections.contains(where: { $0.collectionID == existing.collectionID }) {
-                    result.save.collections.append(existing)
-                }
-            } else {
-                let created = CollectionItem(name: bag)
-                modelContext.insert(created)
-                result.save.collections.append(created)
-            }
         }
         try? modelContext.save()
         savedID = result.save.saveID
@@ -826,6 +1280,54 @@ struct FeedCard: View {
     }
 }
 
+private struct FeedMoreSheet: View {
+    let post: FeedPost
+    var onAsk: () -> Void
+    var onWhy: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("About this video")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+            Text(post.cardBlurb)
+                .font(.system(size: 15))
+                .foregroundStyle(.white.opacity(0.7))
+            moreRow("sparkles", "Ask") { dismiss(); onAsk() }
+            moreRow("bookmark", "Why this") { dismiss(); onWhy() }
+            moreRow("arrow.up.right", "Open original") {
+                dismiss()
+                if let url = URL(string: post.headlineURL), !post.headlineURL.isEmpty {
+                    if !OutboundLink.open(url) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+            }
+            Spacer()
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.black)
+    }
+
+    private func moreRow(_ symbol: String, _ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: symbol)
+                    .font(.system(size: 18))
+                    .frame(width: 28)
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold))
+                Spacer()
+            }
+            .foregroundStyle(.white)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 struct StoryDetailView: View {
     @State private var post: FeedPost
     @Query(sort: \SaveItem.savedAt, order: .reverse) private var saves: [SaveItem]
@@ -841,9 +1343,12 @@ struct StoryDetailView: View {
     @State private var hasAskThread = false
     @State private var page: InAppPage?
 
+
     init(post: FeedPost) {
         _post = State(initialValue: post)
-        _picture = State(initialValue: FeedImageCache.image(for: post.id))
+        let fromPost = FeedImageCache.image(for: post.id)
+        let fromArticle = FeedImageCache.image(for: FeedNews.photoID(url: post.headlineURL, title: post.title))
+        _picture = State(initialValue: fromPost ?? fromArticle)
     }
 
     private var relatedSave: SaveItem? {
@@ -935,10 +1440,10 @@ struct StoryDetailView: View {
             .padding(20)
             .padding(.bottom, 8)
         }
-        .syncPullToRefresh {
-            if let next = FeedStore.load().first(where: { $0.id == post.id }) {
-                post = await FeedStudio.ensureBriefing(next)
-            }
+        .syncPullToRefresh(caption: "Fetching story") {
+            var current = FeedStore.load().first(where: { $0.id == post.id }) ?? post
+            current.briefingReady = false
+            post = await FeedStudio.ensureBriefing(current)
         }
         .background(SyncTheme.paper.ignoresSafeArea())
         .onAppear {
@@ -946,20 +1451,9 @@ struct StoryDetailView: View {
         }
         .onDisappear { reader.stop() }
         .navigationBarTitleDisplayMode(.inline)
-        .task { await loadPicture() }
-        .task {
-            guard FeedStudio.isPlaceholder(post) else { return }
-            for _ in 0..<8 {
-                try? await Task.sleep(for: .seconds(2))
-                guard FeedStudio.isPlaceholder(post) else { return }
-                if let stored = FeedStore.load().first(where: { $0.id == post.id }),
-                   !FeedStudio.isPlaceholder(stored) {
-                    var t = Transaction()
-                    t.animation = nil
-                    withTransaction(t) { post = stored }
-                    return
-                }
-            }
+        .task(id: post.id) {
+            await loadPicture()
+            await fillSummary()
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Button {
@@ -1047,8 +1541,10 @@ struct StoryDetailView: View {
             .presentationDragIndicator(.visible)
             .presentationBackground(SyncTheme.paper)
         }
-        .fullScreenCover(isPresented: $showingAsk) {
+        .sheet(isPresented: $showingAsk) {
             FeedAskSheet(post: post, save: relatedSave)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
                 .presentationBackground(SyncTheme.paper)
         }
     }
@@ -1122,8 +1618,33 @@ struct StoryDetailView: View {
         savedID = nil
     }
 
+    private func fillSummary() async {
+        let stored = FeedStore.load().first(where: {
+            $0.id == post.id || (!post.headlineURL.isEmpty && $0.headlineURL == post.headlineURL)
+        })
+        // #region agent log
+        AgentDebug.log("A", "StoryDetailView.fillSummary", "enter", [
+            "scriptLen": (stored ?? post).script.count,
+            "ready": (stored ?? post).briefingReady,
+            "placeholder": FeedStudio.isPlaceholder(stored ?? post),
+            "echo": FeedStudio.echoesHeadline(stored ?? post)
+        ])
+        // #endregion
+        if let stored {
+            post = stored
+            if !FeedStudio.isPlaceholder(stored) { return }
+        }
+        post = await FeedStudio.ensureBriefing(post)
+        // #region agent log
+        AgentDebug.log("A", "StoryDetailView.fillSummary", "exit", [
+            "scriptLen": post.script.count,
+            "ready": post.briefingReady,
+            "placeholder": FeedStudio.isPlaceholder(post)
+        ])
+        // #endregion
+    }
+
     private func loadPicture() async {
-        if picture != nil { return }
         if let image = await FeedNews.loadFastImage(for: post) {
             picture = image
         }
@@ -1405,6 +1926,151 @@ enum FeedAsk {
             return "Couldn’t reach the model. Try again in a moment."
         }
         return LibraryAsk.strippedHeading(text)
+    }
+}
+
+private struct KeyboardLiftLock: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> LockController {
+        LockController()
+    }
+
+    func updateUIViewController(_ vc: LockController, context: Context) {}
+
+    final class LockController: UIViewController {
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.isUserInteractionEnabled = false
+            view.backgroundColor = .clear
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(keyboardFrame),
+                name: UIResponder.keyboardWillChangeFrameNotification,
+                object: nil
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(keyboardHide),
+                name: UIResponder.keyboardWillHideNotification,
+                object: nil
+            )
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            stripHostingKeyboard()
+        }
+
+        @objc private func keyboardHide(_ note: Notification) {
+            pin(0, note: note)
+        }
+
+        @objc private func keyboardFrame(_ note: Notification) {
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let screen = view.window?.bounds ?? UIScreen.main.bounds
+            pin(max(0, screen.maxY - frame.minY), note: note)
+        }
+
+        private func pin(_ keyboardHeight: CGFloat, note: Notification) {
+            stripHostingKeyboard()
+        }
+
+        private func stripHostingKeyboard() {
+            guard #available(iOS 16.4, *) else { return }
+            var vc: UIViewController? = parent ?? self
+            while let current = vc {
+                if current.responds(to: Selector(("setSafeAreaRegions:"))) {
+                    let raw = (current.value(forKey: "safeAreaRegions") as? UInt) ?? 3
+                    current.setValue(raw & ~2, forKey: "safeAreaRegions")
+                }
+                vc = current.parent
+            }
+        }
+    }
+}
+
+private struct PinChromeTop<Content: View>: UIViewRepresentable {
+    @ViewBuilder var content: Content
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> PinView {
+        let view = PinView()
+        view.backgroundColor = .clear
+        let host = UIHostingController(rootView: AnyView(content))
+        host.view.backgroundColor = .clear
+        if #available(iOS 16.4, *) {
+            host.safeAreaRegions = []
+        }
+        context.coordinator.host = host
+        view.host = host
+        view.addSubview(host.view)
+        return view
+    }
+
+    func updateUIView(_ uiView: PinView, context: Context) {
+        context.coordinator.host?.rootView = AnyView(content)
+        uiView.invalidateIntrinsicContentSize()
+        uiView.setNeedsLayout()
+    }
+
+    final class Coordinator {
+        var host: UIHostingController<AnyView>?
+    }
+
+    final class PinView: UIView {
+        var host: UIHostingController<AnyView>?
+
+        override var intrinsicContentSize: CGSize {
+            let width = bounds.width > 1 ? bounds.width : UIScreen.main.bounds.width
+            let height = host?.view.sizeThatFits(
+                CGSize(width: width, height: UIView.layoutFittingExpandedSize.height)
+            ).height ?? 120
+            return CGSize(width: UIView.noIntrinsicMetric, height: height)
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(relayout),
+                name: UIResponder.keyboardWillChangeFrameNotification,
+                object: nil
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(relayout),
+                name: UIResponder.keyboardDidChangeFrameNotification,
+                object: nil
+            )
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        @objc private func relayout() {
+            setNeedsLayout()
+            layoutIfNeeded()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            let height = host?.view.sizeThatFits(
+                CGSize(width: bounds.width, height: UIView.layoutFittingExpandedSize.height)
+            ).height ?? bounds.height
+            host?.view.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(height, 1))
+            transform = .identity
+            let y = convert(CGPoint.zero, to: window).y
+            if window != nil, abs(y) > 0.5 {
+                transform = CGAffineTransform(translationX: 0, y: -y)
+            }
+        }
     }
 }
 

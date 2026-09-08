@@ -2,6 +2,7 @@ import SwiftUI
 
 enum CoachSpot: String, Hashable {
     case settings, howTo, collections, ask, forYou, save, searchBar, stories
+    case books, library, hero
     case fypSearch, fypVoice, fypMute, fypRefresh
 }
 
@@ -16,16 +17,18 @@ enum CoachTour {
     static let completedKey = "hasCompletedCoachTour"
     static let restartKey = "restartCoachTour"
     static let fypCompletedKey = "hasCompletedFYPCoachTour"
+    static let fypRestartKey = "restartFYPCoachTour"
 
     static let home: [CoachStep] = [
-        CoachStep(spot: .settings, title: "Settings", body: "Appearance, voice, export, and your account."),
-        CoachStep(spot: .howTo, title: "How to use", body: "Tap here any time to run this tour again."),
-        CoachStep(spot: .collections, title: "Collections", body: "Folders that fill from topics in your saves."),
-        CoachStep(spot: .ask, title: "Search / Ask", body: "Find a save or ask across everything you’ve kept."),
-        CoachStep(spot: .forYou, title: "For you", body: "This is FYP — full-screen stories from what you save. Swipe like a story stack."),
+        CoachStep(spot: .howTo, title: "How to use", body: "Open the full guide any time. Replay this tour from Settings too."),
+        CoachStep(spot: .searchBar, title: "Search", body: "Find a save or ask across everything you’ve kept."),
         CoachStep(spot: .save, title: "Save", body: "Paste a link or write a note without leaving Home."),
-        CoachStep(spot: .searchBar, title: "Search bar", body: "Same as Ask. Type a person, topic, or question."),
-        CoachStep(spot: .stories, title: "Stories", body: "Headlines written from your library. Open For you for the full feed."),
+        CoachStep(spot: .hero, title: "Featured course", body: "Tap the hero to jump into a path. Lessons swipe like cards and pick up where you left off."),
+        CoachStep(spot: .collections, title: "Continue learning", body: "Your course catalog. See all opens every path."),
+        CoachStep(spot: .books, title: "Book courses", body: "Book-length courses with summaries and lessons, not just a reading list."),
+        CoachStep(spot: .library, title: "Your library", body: "Recent saves from share sheet, paste, and notes. See all opens the full library."),
+        CoachStep(spot: .stories, title: "Today’s news", body: "A few headlines on Home. The News tab has Top, U.S., World, and the rest."),
+        CoachStep(spot: .forYou, title: "Tabs", body: "Home, For you, Learn, News, and You. For you is the full-screen story feed."),
     ]
 
     static let fyp: [CoachStep] = [
@@ -76,12 +79,14 @@ extension View {
         _ steps: [CoachStep],
         isPresented: Binding<Bool>,
         blocksTouches: Bool = true,
+        onStepChange: @escaping (CoachSpot) -> Void = { _ in },
         onFinished: @escaping () -> Void = {}
     ) -> some View {
         modifier(CoachMarksOverlay(
             steps: steps,
             isPresented: isPresented,
             blocksTouches: blocksTouches,
+            onStepChange: onStepChange,
             onFinished: onFinished
         ))
     }
@@ -91,6 +96,7 @@ struct CoachMarksOverlay: ViewModifier {
     let steps: [CoachStep]
     @Binding var isPresented: Bool
     var blocksTouches = true
+    var onStepChange: (CoachSpot) -> Void = { _ in }
     var onFinished: () -> Void = {}
     @State private var index = 0
 
@@ -114,8 +120,8 @@ struct CoachMarksOverlay: ViewModifier {
                                 ctx.fill(path, with: .color(.black.opacity(0.52)), style: FillStyle(eoFill: true))
                             }
                             .ignoresSafeArea()
-                            .allowsHitTesting(blocksTouches)
-                            .onTapGesture { if blocksTouches { advance() } }
+                            .contentShape(Rectangle())
+                            .onTapGesture { advance() }
 
                             if let hole {
                                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -128,12 +134,22 @@ struct CoachMarksOverlay: ViewModifier {
                             bubble(for: step, hole: hole, in: geo.size)
                         }
                     }
-                    .allowsHitTesting(blocksTouches)
                 }
             }
             .onChange(of: isPresented) { _, on in
-                if on { index = 0 }
+                if on {
+                    index = 0
+                    announceStep()
+                }
             }
+            .onChange(of: index) { _, _ in
+                announceStep()
+            }
+    }
+
+    private func announceStep() {
+        guard isPresented, !steps.isEmpty else { return }
+        onStepChange(steps[min(index, steps.count - 1)].spot)
     }
 
     private func bubble(for step: CoachStep, hole: CGRect?, in size: CGSize) -> some View {
@@ -175,7 +191,11 @@ struct CoachMarksOverlay: ViewModifier {
                 .stroke(SyncTheme.line, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
-        .offset(bubbleOffset(hole: hole, placeBelow: placeBelow, in: size))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.leading, bubbleOffset(hole: hole, placeBelow: placeBelow, in: size).width)
+        .padding(.top, bubbleOffset(hole: hole, placeBelow: placeBelow, in: size).height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .zIndex(2)
     }
 
     private func bubbleOffset(hole: CGRect?, placeBelow: Bool, in size: CGSize) -> CGSize {

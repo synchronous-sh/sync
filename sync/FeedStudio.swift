@@ -13,15 +13,18 @@ enum FeedStudio {
         "release", "playlist", "playlists", "genre", "marketing",
         "campaign", "track", "tracks", "single", "album", "ep"
     ])
+    @MainActor private static var briefingTasks: [String: Task<FeedPost, Never>] = [:]
 
     @MainActor
     static func fill(
         from saves: [SaveItem],
         count: Int = 12,
         replace: Bool = false,
+        resetSeen: Bool = true,
+        skipHistory: Bool = true,
         onPost: ((FeedPost) -> Void)? = nil
     ) async -> [FeedPost] {
-        await runFill(from: saves, count: count, replace: replace, onPost: onPost)
+        await runFill(from: saves, count: count, replace: replace, resetSeen: resetSeen, skipHistory: skipHistory, onPost: onPost)
     }
 
     @MainActor
@@ -29,74 +32,121 @@ enum FeedStudio {
         from saves: [SaveItem],
         count: Int,
         replace: Bool,
+        resetSeen: Bool,
+        skipHistory: Bool,
         onPost: ((FeedPost) -> Void)?
     ) async -> [FeedPost] {
+        // #region agent log
+        let t0 = CFAbsoluteTimeGetCurrent()
+        AgentDebug.log("A", "FeedStudio.swift:fill", "fill_start", ["count": count, "replace": replace])
+        // #endregion
         let previous = replace ? FeedStore.load() : []
         if replace {
-            FeedStore.clearSeen()
+            if resetSeen { FeedStore.clearSeen() }
+            FeedStore.save([])
         }
-        let existing = FeedStore.load()
+        let existing = replace ? [] : FeedStore.load()
         var used = Set<String>()
         var usedTitles: [String] = []
+        var usedPhotos = Set<String>()
         for post in existing {
             used.insert(FeedStore.fingerprint(title: post.headline.isEmpty ? post.title : post.headline, url: post.headlineURL))
             usedTitles.append(post.headline.isEmpty ? post.title : post.headline)
         }
-        let all = {
-            let fromLibrary = interests(in: saves)
-            return fromLibrary.isEmpty ? starterInterests() : fromLibrary
-        }()
-        let take = min(8, all.count)
+        let fromLibrary = interests(in: saves)
+        TasteEngine.ingest(saves)
+        let preferred = TasteEngine.seedQueries()
+        let mixed = fromLibrary.isEmpty ? starterInterests() : withAI(fromLibrary)
+        let all = mixed.sorted { a, b in
+            let ia = preferred.firstIndex { a.query.lowercased().contains($0.lowercased()) } ?? 80
+            let ib = preferred.firstIndex { b.query.lowercased().contains($0.lowercased()) } ?? 80
+            return ia < ib
+        }
+        let take = min(2, all.count)
         let start = existing.count % max(all.count, 1)
         let pool = all.isEmpty ? [] : (0..<take).map { all[(start + $0) % all.count] }
+        // #region agent log
+        AgentDebug.log("C", "FeedStudio.swift:fill", "pool", ["queries": pool.map(\.query).joined(separator: "|")])
+        // #endregion
 
         var headlines: [[NewsHeadline]] = Array(repeating: [], count: pool.count)
-        let want = max(count, 8)
+        let want = max(count, 6)
+        var cursor = Array(repeating: 0, count: pool.count)
+        var made: [FeedPost] = []
+
+        func emitAvailable() {
+            var progress = true
+            while made.count < want, progress {
+                progress = false
+                for i in pool.indices {
+                    if made.count >= want { break }
+                    let interest = pool[i]
+                    while cursor[i] < headlines[i].count {
+                        let raw = headlines[i][cursor[i]]
+                        cursor[i] += 1
+                        let print = FeedStore.fingerprint(title: raw.title, url: raw.url)
+                        if used.contains(print) { continue }
+                        if skipHistory, !replace, FeedStore.hasSeen(title: raw.title, url: raw.url) { continue }
+                        if usedTitles.contains(where: { FeedStore.isSameStory(raw.title, $0) }) { continue }
+                        let hadPhoto = raw.imageURL != nil
+                        var story = raw
+                        if let photo = story.imageURL {
+                            let key = "\((photo.host ?? "").lowercased())\(photo.path.lowercased())"
+                            if usedPhotos.contains(key) {
+                                story.imageURL = nil
+                            } else {
+                                usedPhotos.insert(key)
+                            }
+                        }
+                        if !hadPhoto {
+                            let rest = headlines[i].suffix(from: cursor[i])
+                            if rest.contains(where: { $0.imageURL != nil }) { continue }
+                        }
+                        let post = listPost(story: story, interest: interest)
+                        if made.contains(where: { FeedStore.isSameStory(post.headline, $0.headline) }) { continue }
+                        used.insert(print)
+                        usedTitles.append(story.title)
+                        made.append(post)
+                        // #region agent log
+                        AgentDebug.log("C", "FeedStudio.swift:emit", "card", [
+                            "interest": interest.query,
+                            "imgHost": story.imageURL?.host ?? "none",
+                            "imgPath": String((story.imageURL?.path ?? "").suffix(40)),
+                            "title": String(story.title.prefix(48))
+                        ])
+                        // #endregion
+                        FeedStorySet.remember(post)
+                        onPost?(post)
+                        progress = true
+                        break
+                    }
+                }
+            }
+        }
 
         await withTaskGroup(of: (Int, [NewsHeadline]).self) { group in
             for (i, interest) in pool.enumerated() {
                 group.addTask {
-                    var stories = await FeedNews.stories(for: interest.query, limit: 24)
-                    if stories.count < 8 {
-                        for extra in interest.extras.prefix(2) {
-                            stories.append(contentsOf: await FeedNews.stories(for: extra, limit: 12))
-                        }
+                    var stories = await FeedNews.stories(for: interest.query, limit: 10, skipSeen: false)
+                    if stories.count < 4, let extra = interest.extras.first {
+                        stories.append(contentsOf: await FeedNews.stories(for: extra, limit: 8))
                     }
                     stories.sort { ($0.imageURL != nil ? 0 : 1) < ($1.imageURL != nil ? 0 : 1) }
                     return (i, stories)
                 }
             }
             for await (i, stories) in group {
-                headlines[i] = stories
-            }
-        }
-
-        var candidates: [(index: Int, interest: Interest, story: NewsHeadline)] = []
-        var cursor = Array(repeating: 0, count: pool.count)
-        let cap = max(want * 3, 12)
-        while candidates.count < cap {
-            var added = false
-            for i in pool.indices {
-                if candidates.count >= cap { break }
-                let interest = pool[i]
-                while cursor[i] < headlines[i].count {
-                    let story = headlines[i][cursor[i]]
-                    cursor[i] += 1
-                    let print = FeedStore.fingerprint(title: story.title, url: story.url)
-                    if used.contains(print) { continue }
-                    if !replace, FeedStore.hasSeen(title: story.title, url: story.url) { continue }
-                    if usedTitles.contains(where: { FeedStore.isSameStory(story.title, $0) }) { continue }
-                    used.insert(print)
-                    usedTitles.append(story.title)
-                    candidates.append((i, interest, story))
-                    added = true
+                headlines[i] = TasteEngine.rankNews(stories, category: pool[i].query, limit: stories.count)
+                headlines[i].sort { ($0.imageURL != nil ? 0 : 1) < ($1.imageURL != nil ? 0 : 1) }
+                emitAvailable()
+                if made.count >= want {
+                    group.cancelAll()
                     break
                 }
             }
-            if !added { break }
         }
 
-        if candidates.isEmpty {
+        if made.isEmpty {
             let backup = await FeedNews.stories(for: "top stories", limit: 20, skipSeen: false)
             let interest = pool.first ?? Interest(
                 query: "world news",
@@ -106,106 +156,65 @@ enum FeedStudio {
                 savedAt: .now
             )
             for story in backup.prefix(12) {
+                if made.count >= want { break }
                 let print = FeedStore.fingerprint(title: story.title, url: story.url)
                 if used.contains(print) { continue }
+                let post = listPost(story: story, interest: interest)
+                if made.contains(where: { FeedStore.isSameStory(post.headline, $0.headline) }) { continue }
                 used.insert(print)
-                candidates.append((0, interest, story))
+                made.append(post)
+                FeedStorySet.remember(post)
+                onPost?(post)
             }
-        }
-
-        var made: [FeedPost] = []
-        var replacedStore = !replace
-        for pair in candidates {
-            let post = listPost(story: pair.story, interest: pair.interest)
-            if made.contains(where: { FeedStore.isSameStory(post.headline, $0.headline) }) { continue }
-            made.append(post)
-            if replace, !replacedStore {
-                FeedStore.save([post])
-                replacedStore = true
-            } else {
-                FeedStore.append([post])
-            }
-            FeedStorySet.remember(post)
-            onPost?(post)
-            if made.count >= want { break }
         }
         if !made.isEmpty {
+            if replace {
+                FeedStore.save(made)
+            } else {
+                FeedStore.append(made)
+            }
             Task { await ensureBriefings(made) }
         }
 
         if replace, made.isEmpty, !previous.isEmpty {
             FeedStore.save(previous)
+            // #region agent log
+            AgentDebug.log("A", "FeedStudio.swift:fill", "fill_end_prev", ["ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)])
+            // #endregion
             return previous
         }
-        return FeedStore.load()
+        let out = made.isEmpty ? FeedStore.load() : made
+        // #region agent log
+        AgentDebug.log("A", "FeedStudio.swift:fill", "fill_end", ["ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000), "made": made.count])
+        // #endregion
+        return out
     }
 
     @MainActor
     static func search(_ raw: String, count: Int = 8, onPost: ((FeedPost) -> Void)? = nil) async -> [FeedPost] {
         let typed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard typed.count >= 2 else { return [] }
-        let topic = expand(await newsQuery(from: typed))
-        var extras: [String] = []
-        for item in [typed, topic] {
-            let t = item.trimmingCharacters(in: .whitespacesAndNewlines)
-            let key = t.lowercased()
-            if t.count < 2 { continue }
-            if extras.contains(where: { $0.lowercased() == key }) { continue }
-            extras.append(t)
-        }
         let interest = Interest(
-            query: topic,
+            query: typed,
             saveID: UUID(),
             why: "",
-            extras: extras,
+            extras: [],
             savedAt: .now
         )
-        var stories = await FeedNews.stories(for: topic, limit: 20, skipSeen: false, requireMention: true)
-        if stories.count < 8 {
-            for extra in interest.extras where extra.lowercased() != topic.lowercased() {
-                stories.append(contentsOf: await FeedNews.stories(for: extra, limit: 12, skipSeen: false, requireMention: true))
-            }
-        }
-        stories.sort {
-            ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast)
-        }
-        var used = Set<String>()
-        var unique: [NewsHeadline] = []
-        for story in stories {
-            let print = FeedStore.fingerprint(title: story.title, url: story.url)
-            if used.contains(print) { continue }
-            if unique.contains(where: { FeedStore.isSameStory(story.title, $0.title) }) { continue }
-            used.insert(print)
-            unique.append(story)
-            if unique.count >= max(count * 2, 10) { break }
-        }
-
+        let stories = await naturalHeadlines(typed, limit: max(count, 8))
         var made: [FeedPost] = []
-        await withTaskGroup(of: FeedPost?.self) { group in
-            for story in unique {
-                group.addTask {
-                    if let post = await draftedPost(story: story, interest: interest) {
-                        return post
-                    }
-                    return await fallbackPost(story: story, interest: interest)
-                }
-            }
-            for await post in group {
-                guard let post else { continue }
-                if made.contains(where: { FeedStore.isSameStory(post.headline, $0.headline) }) { continue }
-                made.append(post)
-                onPost?(post)
-                if made.count >= count {
-                    group.cancelAll()
-                    break
-                }
-            }
+        for story in stories {
+            let post = listPost(story: story, interest: interest)
+            if made.contains(where: { FeedStore.isSameStory($0.headline, story.title) }) { continue }
+            made.append(post)
+            onPost?(post)
+            if made.count >= count { break }
         }
-        made.sort { $0.publishedAt > $1.publishedAt }
         let rest = FeedStore.load().filter { existing in
             !made.contains { FeedStore.isSameStory($0.headline, existing.headline) }
         }
         FeedStore.save(made + rest)
+        Task { await ensureBriefings(made) }
         return made
     }
 
@@ -213,30 +222,16 @@ enum FeedStudio {
     static func lookup(_ raw: String, count: Int = 12) async -> [FeedPost] {
         let typed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard typed.count >= 2 else { return [] }
-        let topic = expand(typed)
         let interest = Interest(
-            query: topic,
+            query: typed,
             saveID: UUID(),
             why: "",
-            extras: typed.lowercased() == topic.lowercased() ? [] : [typed],
+            extras: [],
             savedAt: .now
         )
-        var stories = await FeedNews.stories(for: topic, limit: max(count * 2, 16), skipSeen: false, requireMention: true)
-        if stories.count < 6, typed.lowercased() != topic.lowercased() {
-            stories.append(contentsOf: await FeedNews.stories(for: typed, limit: 12, skipSeen: false, requireMention: true))
-        }
-        var used = Set<String>()
-        var unique: [NewsHeadline] = []
-        for story in stories {
-            let print = FeedStore.fingerprint(title: story.title, url: story.url)
-            if used.contains(print) { continue }
-            if unique.contains(where: { FeedStore.isSameStory(story.title, $0.title) }) { continue }
-            used.insert(print)
-            unique.append(story)
-            if unique.count >= count { break }
-        }
+        let stories = await naturalHeadlines(typed, limit: count)
         var made: [FeedPost] = []
-        for story in unique {
+        for story in stories {
             let post = listPost(story: story, interest: interest)
             if made.contains(where: { FeedStore.isSameStory($0.headline, post.headline) }) { continue }
             made.append(post)
@@ -249,32 +244,200 @@ enum FeedStudio {
         return made
     }
 
-    private static func newsQuery(from raw: String) async -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let words = trimmed.split(whereSeparator: \.isWhitespace)
-        if words.count <= 6, !trimmed.contains("?") { return trimmed }
-        guard IntelligenceKey.isConfigured else { return trimmed }
-        let reply = await AnthropicLibrary.reply(
-            system: "Turn the user's words into a short news search query. 2 to 6 words. No quotes. No punctuation besides spaces. Output only the query.",
-            user: trimmed,
-            maxTokens: 40
+    @MainActor
+    static func headlineSearch(_ raw: String, limit: Int = 12) async -> [NewsHeadline] {
+        await naturalHeadlines(raw, limit: limit)
+    }
+
+    @MainActor
+    static func naturalHeadlines(_ raw: String, limit: Int) async -> [NewsHeadline] {
+        let typed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard typed.count >= 2 else { return [] }
+        let plan = await SearchSense.plan(typed)
+        var bag: [NewsHeadline] = []
+        await withTaskGroup(of: [NewsHeadline].self) { group in
+            var seenQ = Set<String>()
+            for q in ([typed] + plan.queries) {
+                let key = q.lowercased()
+                if key.count < 2 || !seenQ.insert(key).inserted { continue }
+                group.addTask {
+                    await FeedNews.stories(for: q, limit: 10, skipSeen: false, requireMention: false, freshOnly: false)
+                }
+            }
+            for await batch in group {
+                bag.append(contentsOf: batch)
+            }
+        }
+        var seen = Set<String>()
+        var unique: [NewsHeadline] = []
+        for item in bag {
+            let key = FeedStore.fingerprint(title: item.title, url: item.url)
+            if seen.contains(key) { continue }
+            seen.insert(key)
+            unique.append(item)
+        }
+        let matched = await SearchSense.match(unique, intent: plan.intent, ask: typed, limit: limit)
+        return matched.isEmpty ? Array(unique.prefix(limit)) : matched
+    }
+
+    @MainActor
+    static func posts(forCategory category: String, count: Int = 10, onPost: ((FeedPost) -> Void)? = nil) async -> [FeedPost] {
+        let topic = category == "For You" ? "Top" : category
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let cached = NewsFeedCache.stored(topic)
+        var stories = TasteEngine.rankNews(cached, category: topic, limit: max(count, 8))
+        // #region agent log
+        AgentDebug.log("B", "FeedStudio.posts(forCategory)", "cache", [
+            "cat": category,
+            "cached": cached.count,
+            "ranked": stories.count
+        ])
+        // #endregion
+        if stories.count < min(count, 6) {
+            stories = TasteEngine.rankNews(
+                await FeedNews.browse(category: topic, limit: max(count, 8), skipAPI: true),
+                category: topic,
+                limit: max(count, 8)
+            )
+        }
+        let interest = Interest(
+            query: category,
+            saveID: UUID(),
+            why: "",
+            extras: [],
+            savedAt: .now
         )
-        guard let reply else { return trimmed }
-        let first = reply
-            .replacingOccurrences(of: "\"", with: "")
-            .split(whereSeparator: \.isNewline)
-            .first
-            .map(String.init) ?? ""
-        let line = first.trimmingCharacters(in: .whitespacesAndNewlines)
-        return line.count >= 2 ? line : trimmed
+        var made: [FeedPost] = []
+        for story in stories {
+            if made.contains(where: { FeedStore.isSameStory($0.headline, story.title) }) { continue }
+            let post = listPost(story: story, interest: interest)
+            made.append(post)
+            onPost?(post)
+            if made.count >= count { break }
+        }
+        // #region agent log
+        AgentDebug.log("B", "FeedStudio.posts(forCategory)", "done", [
+            "cat": category,
+            "ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000),
+            "n": made.count
+        ])
+        // #endregion
+        if !made.isEmpty {
+            let snapshot = made
+            Task { @MainActor in
+                let rest = FeedStore.load().filter { existing in
+                    !snapshot.contains { FeedStore.isSameStory($0.headline, existing.headline) }
+                }
+                FeedStore.save(snapshot + rest)
+                await ensureBriefings(snapshot)
+            }
+        }
+        return made
+    }
+
+    private static let searchGlue: Set<String> = [
+        "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "about",
+        "news", "latest", "acquire", "acquires", "acquired", "acquisition", "buy", "buys",
+        "bought", "purchase", "purchases", "merger", "deal", "rumor", "rumors", "vs", "versus"
+    ]
+
+    private static func searchQueries(from raw: String) async -> [String] {
+        heuristicQueries(raw)
+    }
+
+    private static func heuristicQueries(_ raw: String) -> [String] {
+        let typed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var queries: [String] = []
+        func add(_ value: String) {
+            let t = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard t.count >= 2 else { return }
+            let key = t.lowercased()
+            if queries.contains(where: { $0.lowercased() == key }) { return }
+            queries.append(t)
+        }
+        add(typed)
+        add(expand(typed))
+        let names = typed.split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .filter { word in
+                let lower = word.lowercased()
+                return word.count >= 3 && !searchGlue.contains(lower)
+            }
+        if names.count >= 2 {
+            add(names.joined(separator: " "))
+        } else {
+            for name in names { add(name) }
+        }
+        return Array(queries.prefix(3))
+    }
+
+    private static func collectStories(queries: [String], limit: Int) async -> [NewsHeadline] {
+        var stories: [NewsHeadline] = []
+        await withTaskGroup(of: [NewsHeadline].self) { group in
+            for query in queries {
+                group.addTask {
+                    await FeedNews.stories(for: query, limit: 16, skipSeen: false, requireMention: false, freshOnly: false)
+                }
+            }
+            for await batch in group {
+                stories.append(contentsOf: batch)
+            }
+        }
+        if stories.count > limit * 3 {
+            stories = Array(stories.prefix(limit * 3))
+        }
+        return stories
+    }
+
+    private static func rankStories(_ stories: [NewsHeadline], typed: String, queries: [String]) -> [NewsHeadline] {
+        let needles = searchNeedles(typed: typed, queries: queries)
+        var used = Set<String>()
+        var unique: [NewsHeadline] = []
+        for story in stories {
+            let print = FeedStore.fingerprint(title: story.title, url: story.url)
+            if used.contains(print) { continue }
+            if unique.contains(where: { FeedStore.isSameStory(story.title, $0.title) }) { continue }
+            used.insert(print)
+            unique.append(story)
+        }
+        unique.sort { left, right in
+            let leftHits = hitCount(left, needles: needles)
+            let rightHits = hitCount(right, needles: needles)
+            if leftHits != rightHits { return leftHits > rightHits }
+            return (left.publishedAt ?? .distantPast) > (right.publishedAt ?? .distantPast)
+        }
+        if !needles.isEmpty {
+            let relevant = unique.filter { hitCount($0, needles: needles) > 0 }
+            if !relevant.isEmpty { unique = relevant }
+        }
+        return unique
+    }
+
+    private static func searchNeedles(typed: String, queries: [String]) -> [String] {
+        var needles: [String] = []
+        for source in [typed] + queries {
+            for word in source.split(whereSeparator: \.isWhitespace) {
+                let token = word.trimmingCharacters(in: .punctuationCharacters).lowercased()
+                guard token.count >= 3, !searchGlue.contains(token) else { continue }
+                if needles.contains(token) { continue }
+                needles.append(token)
+            }
+        }
+        return needles
+    }
+
+    private static func hitCount(_ story: NewsHeadline, needles: [String]) -> Int {
+        let hay = (story.title + " " + story.snippet).lowercased()
+        return needles.reduce(0) { $0 + (hay.contains($1) ? 1 : 0) }
+    }
+
+    private static func newsQuery(from raw: String) async -> String {
+        (await searchQueries(from: raw)).first ?? raw
     }
 
     @MainActor
     static func withPhotos(_ posts: [FeedPost]) async -> [FeedPost] {
-        for post in posts {
-            if FeedImageCache.image(for: post.id) != nil { continue }
-            _ = await FeedNews.loadFastImage(for: post)
-        }
+        FeedImageCache.prefetch(posts)
         return posts
     }
 
@@ -288,9 +451,7 @@ enum FeedStudio {
         let hasBullets = script.contains("- ") || script.contains("• ") || script.contains("\n* ")
         guard hasBullets else { return nil }
         let id = UUID()
-        let pic = await FeedNews.picture(for: story, interest: interest.query, id: id)
-        guard !pic.file.isEmpty || !pic.remote.isEmpty else { return nil }
-        return FeedPost(
+        let post = FeedPost(
             id: id,
             saveID: interest.saveID,
             title: title,
@@ -298,13 +459,16 @@ enum FeedStudio {
             headline: story.title,
             headlineURL: story.url,
             audioFileName: "",
-            imageFileName: pic.file,
-            imageURL: pic.remote,
+            imageFileName: "",
+            imageURL: "",
             sourceName: story.source,
             interest: interest.query,
             createdAt: .now,
-            publishedAt: story.publishedAt ?? .now
+            publishedAt: story.publishedAt ?? .now,
+            briefingReady: true
         )
+        Task(priority: .userInitiated) { _ = await FeedNews.loadFastImage(for: post) }
+        return post
     }
 
     private static func fallbackPost(story: NewsHeadline, interest: Interest) async -> FeedPost? {
@@ -324,8 +488,7 @@ enum FeedStudio {
         }
         let script = "\(para)\n\n\(bullets.joined(separator: "\n"))"
         let id = UUID()
-        let pic = await FeedNews.picture(for: story, interest: interest.query, id: id)
-        return FeedPost(
+        let post = FeedPost(
             id: id,
             saveID: interest.saveID,
             title: title,
@@ -333,17 +496,66 @@ enum FeedStudio {
             headline: story.title,
             headlineURL: story.url,
             audioFileName: "",
-            imageFileName: pic.file,
-            imageURL: pic.remote,
+            imageFileName: "",
+            imageURL: "",
             sourceName: story.source,
             interest: interest.query,
             createdAt: .now,
             publishedAt: story.publishedAt ?? .now,
             briefingReady: false
         )
+        Task(priority: .userInitiated) { _ = await FeedNews.loadFastImage(for: post) }
+        return post
     }
 
-    private static func listPost(story: NewsHeadline, interest: Interest) -> FeedPost {
+    @MainActor
+    static func post(from story: NewsHeadline, topic: String) -> FeedPost {
+        let photoKey = FeedNews.photoID(for: story)
+        func adoptCache(into id: UUID) {
+            if let image = FeedImageCache.image(for: photoKey) ?? FeedImageCache.image(for: id) {
+                FeedImageCache.store(image, for: id)
+                FeedImageCache.store(image, for: photoKey)
+            }
+        }
+        if let existing = FeedStore.load().first(where: { stored in
+            (!story.url.isEmpty && stored.headlineURL == story.url)
+                || FeedStore.isSameStory(stored.headline, story.title)
+        }) {
+            adoptCache(into: existing.id)
+            return existing
+        }
+        let post = listPost(
+            story: story,
+            interest: Interest(query: topic, saveID: UUID(), why: "", extras: [], savedAt: .now),
+            id: photoKey
+        )
+        adoptCache(into: post.id)
+        var all = FeedStore.load()
+        all.insert(post, at: 0)
+        FeedStore.save(all)
+        return post
+    }
+
+    @MainActor
+    static func prepared(from story: NewsHeadline, topic: String) async -> FeedPost {
+        await ensureBriefing(post(from: story, topic: topic))
+    }
+
+    @MainActor
+    static func finished(_ posts: [FeedPost]) -> [FeedPost] {
+        var store: [UUID: FeedPost] = [:]
+        for post in FeedStore.load() { store[post.id] = post }
+        return posts.map { store[$0.id] ?? $0 }
+    }
+
+    @MainActor
+    static func showable(_ posts: [FeedPost]) -> [FeedPost] {
+        let latest = finished(posts)
+        let ready = latest.filter { !needsBriefing($0) }
+        return ready.isEmpty ? latest : ready
+    }
+
+    private static func listPost(story: NewsHeadline, interest: Interest, id: UUID = UUID()) -> FeedPost {
         let title = FeedNews.displayTitle(story.title)
         let snippet = story.snippet.trimmingCharacters(in: .whitespacesAndNewlines)
         let para = snippet.count > 40 ? snippet : (title.isEmpty ? story.title : title)
@@ -358,7 +570,7 @@ enum FeedStudio {
             bullets = ["- \(title.isEmpty ? story.title : title).", "- Source: \(story.source.isEmpty ? "news" : story.source)."]
         }
         return FeedPost(
-            id: UUID(),
+            id: id,
             saveID: interest.saveID,
             title: title.isEmpty ? story.title : title,
             script: "\(para)\n\n\(bullets.joined(separator: "\n"))",
@@ -375,21 +587,50 @@ enum FeedStudio {
         )
     }
 
+    private static func briefingKey(_ post: FeedPost) -> String {
+        let url = FeedStore.canonical(post.headlineURL)
+        if !url.isEmpty { return "u:" + url }
+        return "i:" + post.id.uuidString
+    }
+
     @MainActor
     static func needsBriefing(_ post: FeedPost) -> Bool {
         isPlaceholder(post)
     }
 
     static func isPlaceholder(_ post: FeedPost) -> Bool {
-        if !post.briefingReady { return true }
         let script = post.script.replacingOccurrences(of: "\\n", with: "\n")
         let bullets = script.components(separatedBy: .newlines).filter {
             let t = $0.trimmingCharacters(in: .whitespaces)
             return t.hasPrefix("- ") || t.hasPrefix("• ") || t.hasPrefix("* ")
         }
-        if bullets.isEmpty { return true }
         if bullets.contains(where: { $0.lowercased().contains("source:") }) { return true }
-        return bullets.count < 4
+        if echoesHeadline(post) { return true }
+        if !post.briefingReady { return true }
+        return script.count < 280
+    }
+
+    static func echoesHeadline(_ post: FeedPost) -> Bool {
+        let titles = [post.title, post.headline]
+            .map { FeedNews.displayTitle($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count > 8 }
+        let lines = post.script
+            .replacingOccurrences(of: "\\n", with: "\n")
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { line -> String in
+                var t = line
+                while t.hasPrefix("- ") || t.hasPrefix("• ") || t.hasPrefix("* ") {
+                    t = String(t.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                }
+                if t.hasSuffix(".") { t = String(t.dropLast()) }
+                return t
+            }
+            .filter { $0.count >= 8 }
+        guard !lines.isEmpty, !titles.isEmpty else { return true }
+        return lines.allSatisfy { line in
+            titles.contains { FeedStore.isSameStory(line, $0) }
+        }
     }
 
     @MainActor
@@ -400,34 +641,66 @@ enum FeedStudio {
 
     @MainActor
     static func ensureBriefing(_ post: FeedPost) async -> FeedPost {
-        if !needsBriefing(post) { return post }
-        for _ in 0..<3 {
-            if let next = await refreshSummary(post), !needsBriefing(next) {
-                return next
-            }
+        if let stored = FeedStore.load().first(where: {
+            $0.id == post.id || (!post.headlineURL.isEmpty && $0.headlineURL == post.headlineURL)
+        }), !needsBriefing(stored) {
+            return stored
         }
-        return FeedStore.load().first(where: { $0.id == post.id }) ?? post
+        if !needsBriefing(post) { return post }
+        let key = briefingKey(post)
+        if let existing = briefingTasks[key] {
+            return await existing.value
+        }
+        // #region agent log
+        AgentDebug.log("B", "FeedStudio.ensureBriefing", "enter", [
+            "ready": post.briefingReady,
+            "scriptLen": post.script.count,
+            "echo": echoesHeadline(post)
+        ])
+        // #endregion
+        let task = Task { @MainActor in
+            for _ in 0..<2 {
+                if let next = await refreshSummary(post), !needsBriefing(next) {
+                    return next
+                }
+            }
+            return FeedStore.load().first(where: {
+                $0.id == post.id || (!post.headlineURL.isEmpty && $0.headlineURL == post.headlineURL)
+            }) ?? post
+        }
+        briefingTasks[key] = task
+        let next = await task.value
+        briefingTasks[key] = nil
+        // #region agent log
+        AgentDebug.log("B", "FeedStudio.ensureBriefing", "exit", [
+            "ready": next.briefingReady,
+            "scriptLen": next.script.count,
+            "placeholder": needsBriefing(next)
+        ])
+        // #endregion
+        return next
     }
 
     @MainActor
-    static func ensureBriefings(_ posts: [FeedPost], prefer first: UUID? = nil) async {
+    static func ensureBriefings(_ posts: [FeedPost], prefer first: UUID? = nil, onReady: ((FeedPost) -> Void)? = nil) async {
         var pending = posts.filter { needsBriefing($0) }
-        if let first, let start = posts.firstIndex(where: { $0.id == first }) {
-            let ordered = Array(posts[start...]) + Array(posts[..<start])
-            pending = ordered.filter { needsBriefing($0) }
+        if let first, let start = pending.firstIndex(where: { $0.id == first }) {
+            let head = pending.remove(at: start)
+            onReady?(await ensureBriefing(head))
         }
-        await withTaskGroup(of: Void.self) { group in
+        await withTaskGroup(of: FeedPost.self) { group in
             var index = 0
             func spawn() {
                 guard index < pending.count else { return }
                 let post = pending[index]
                 index += 1
                 group.addTask { @MainActor in
-                    _ = await ensureBriefing(post)
+                    await ensureBriefing(post)
                 }
             }
-            for _ in 0..<min(3, pending.count) { spawn() }
-            for await _ in group {
+            for _ in 0..<min(5, pending.count) { spawn() }
+            for await next in group {
+                onReady?(next)
                 spawn()
             }
         }
@@ -436,10 +709,12 @@ enum FeedStudio {
     @MainActor
     static func refreshSummary(_ post: FeedPost) async -> FeedPost? {
         let interest = Interest(query: post.interest, saveID: post.saveID, why: "", extras: [], savedAt: .now)
+        let fallback = [post.headline, post.title].first { $0.count > 8 } ?? post.title
+        let excerpt = await FeedNews.articleExcerpt(url: post.headlineURL, fallback: fallback)
         let story = NewsHeadline(
             title: post.headline.isEmpty ? post.title : post.headline,
             url: post.headlineURL,
-            snippet: post.script,
+            snippet: excerpt,
             source: post.sourceName,
             imageURL: URL(string: post.imageURL),
             publishedAt: post.publishedAt
@@ -453,10 +728,28 @@ enum FeedStudio {
         var next = post
         if !title.isEmpty { next.title = title }
         next.script = script
-        next.briefingReady = true
+        next.briefingReady = !echoesHeadline(next) && script.count >= 280
+        // #region agent log
+        AgentDebug.log("E", "FeedStudio.refreshSummary", "draft", [
+            "scriptLen": script.count,
+            "ready": next.briefingReady,
+            "echo": echoesHeadline(next)
+        ])
+        // #endregion
         var all = FeedStore.load()
         if let i = all.firstIndex(where: { $0.id == post.id }) {
             all[i] = next
+            FeedStore.save(all)
+        } else if let i = all.firstIndex(where: {
+            (!next.headlineURL.isEmpty && $0.headlineURL == next.headlineURL)
+                || FeedStore.isSameStory($0.headline, next.headline)
+        }) {
+            all[i].script = next.script
+            all[i].title = next.title
+            all[i].briefingReady = next.briefingReady
+            FeedStore.save(all)
+        } else {
+            all.insert(next, at: 0)
             FeedStore.save(all)
         }
         return next
@@ -472,16 +765,26 @@ enum FeedStudio {
 
     private static func starterInterests() -> [Interest] {
         let queries = [
-            "world news", "climate", "space", "public health",
+            "artificial intelligence", "world news", "climate", "space", "public health",
             "premier league", "formula one", "wildlife", "ocean",
             "architecture", "archaeology", "renewable energy", "film",
             "cities", "nutrition", "cybersecurity", "art",
             "books", "transport", "science", "economy"
-        ].shuffled()
+        ]
         let none = UUID(uuidString: "00000000-0000-0000-0000-000000000000") ?? UUID()
-        return queries.prefix(8).map {
+        let ai = Interest(query: "artificial intelligence", saveID: none, why: "", extras: [], savedAt: .now)
+        let rest = queries.filter { $0 != "artificial intelligence" }.shuffled().prefix(7).map {
             Interest(query: $0, saveID: none, why: "", extras: [], savedAt: .now)
         }
+        return [ai] + rest
+    }
+
+    private static func withAI(_ interests: [Interest]) -> [Interest] {
+        if interests.contains(where: { $0.query.lowercased().contains("artificial intelligence") || $0.query.lowercased() == "ai" }) {
+            return interests
+        }
+        let none = UUID(uuidString: "00000000-0000-0000-0000-000000000000") ?? UUID()
+        return [Interest(query: "artificial intelligence", saveID: none, why: "", extras: [], savedAt: .now)] + interests
     }
 
     private static func interests(in saves: [SaveItem]) -> [Interest] {
@@ -644,33 +947,15 @@ enum FeedStudio {
         Article excerpt: \(excerpt)
         URL: \(story.url)
         """
-        let starter = interest.why.isEmpty
-        let system: String
-        if starter {
-            system = """
-            Write a short feed post for this news item.
+        let system = """
+            Write a news briefing for this story.
             Return JSON only with keys match, title, script.
             match: true unless this is not a real news story.
             title: a new headline. Sentence case.
-            script: First a short paragraph of 2–3 complete sentences that summarize the news (what happened and why it matters). No outlet promo, no “add as a preferred source”, no Google Discover lines. Then a blank line. Then 4 to 6 markdown bullets, each on its own line starting with "- ". Bullets are required.
+            script: One paragraph of 4–5 complete sentences (what happened, who, why it matters). Then a blank line. Then 6 markdown bullets, each on its own line starting with "- ". No outlet promo, no “add as a preferred source”, no Google Discover lines.
             """
-        } else {
-            system = """
-        You decide if a news item belongs in a personal feed, then write the post if it does.
-        Return JSON only with keys match, title, script.
-
-        match: true only if the news is about the SAME person, artist, product, company, place, or topic as the interest, in the SAME sense as the private save context.
-        Same word, different meaning is match false. Example: interest is Lake Ontario (the body of water) → a WNBA / Toronto / sports story that merely mentions Ontario is false. Several different news items about that lake are all true — do not reject a second water-levels or shoreline story just because you already saw one about the lake.
-        Homonyms, acronyms, different people with a similar name, and loosely related news are match false.
-        If match is false, return {"match":false,"title":"","script":""}.
-        If match is true:
-        Do not say "you saved" or mention the library.
-        title: a new headline for this story. Sentence case.
-        script: First a short paragraph of 2–3 complete sentences that summarize the news (what happened and why it matters). No outlet promo, no “add as a preferred source”, no Google Discover lines. Then a blank line. Then 4 to 6 markdown bullets, each on its own line starting with "- ", covering what happened, why it matters, and any numbers or dates. Bullets are required.
-        """
-        }
-        guard let raw = await AnthropicLibrary.reply(system: system, user: user, maxTokens: 700),
-              let parsed = parse(raw, requireMatch: !starter),
+        guard let raw = await AnthropicLibrary.reply(system: system, user: user, maxTokens: 1100),
+              let parsed = parse(raw, requireMatch: false),
               !recycled(parsed.script) else {
             return nil
         }
@@ -684,10 +969,8 @@ enum FeedStudio {
 
     private static func parse(_ raw: String, requireMatch: Bool = true) -> (title: String, script: String)? {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("```") {
-            text = text.replacingOccurrences(of: "```json", with: "")
-                .replacingOccurrences(of: "```", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") {
+            text = String(text[start...end])
         }
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -703,9 +986,82 @@ enum FeedStudio {
         }
         guard match || !requireMatch else { return nil }
         let title = (json["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let script = (json["script"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty, script.count > 40 else { return nil }
-        guard script.contains("- ") || script.contains("•") else { return nil }
+        let script = (json["script"] as? String ?? "")
+            .replacingOccurrences(of: "\\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, script.count > 80 else { return nil }
         return (title, script)
+    }
+}
+
+enum SearchSense {
+    struct Plan {
+        var intent: String
+        var queries: [String]
+    }
+
+    static func plan(_ ask: String) async -> Plan {
+        let fallback = Plan(intent: ask, queries: [ask])
+        guard IntelligenceKey.isConfigured else { return fallback }
+        let user = """
+        Request: \(ask)
+        Return JSON only: {"intent":"one sentence restating what news they want","queries":["q1","q2"]}
+        queries: 2 to 4 short Google News searches. Prefer people, companies, products, and concrete topics. No quotes.
+        """
+        guard let raw = await AnthropicLibrary.reply(
+            system: "You turn a natural-language news request into search queries. JSON only.",
+            user: user,
+            maxTokens: 280
+        ), let json = object(raw) else { return fallback }
+        let intent = (json["intent"] as? String ?? ask).trimmingCharacters(in: .whitespacesAndNewlines)
+        let queries = (json["queries"] as? [String] ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 2 }
+        if queries.isEmpty { return fallback }
+        return Plan(intent: intent.isEmpty ? ask : intent, queries: Array(queries.prefix(4)))
+    }
+
+    static func match(_ items: [NewsHeadline], intent: String, ask: String, limit: Int) async -> [NewsHeadline] {
+        guard !items.isEmpty else { return [] }
+        guard IntelligenceKey.isConfigured else { return Array(items.prefix(limit)) }
+        let catalog = items.prefix(24).enumerated().map { index, story in
+            "[\(index)] \(story.title) — \(String(story.snippet.prefix(140)))"
+        }.joined(separator: "\n")
+        let user = """
+        Ask: \(ask)
+        Intent: \(intent)
+        Stories:
+        \(catalog)
+
+        Return JSON only: {"order":[0,3,1]}
+        order: 0-based indices of stories that actually match the ask, best first. Drop off-topic items. At most \(limit).
+        """
+        guard let raw = await AnthropicLibrary.reply(
+            system: "You judge whether news headlines match a reader's request. JSON only.",
+            user: user,
+            maxTokens: 220
+        ), let json = object(raw) else { return Array(items.prefix(limit)) }
+        var order: [Int] = []
+        if let ints = json["order"] as? [Int] {
+            order = ints
+        } else if let nums = json["order"] as? [NSNumber] {
+            order = nums.map(\.intValue)
+        }
+        var picked: [NewsHeadline] = []
+        var used = Set<Int>()
+        for index in order where items.indices.contains(index) && used.insert(index).inserted {
+            picked.append(items[index])
+            if picked.count >= limit { break }
+        }
+        return picked
+    }
+
+    private static func object(_ raw: String) -> [String: Any]? {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") {
+            text = String(text[start...end])
+        }
+        guard let data = text.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 }

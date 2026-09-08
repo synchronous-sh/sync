@@ -4,6 +4,8 @@ import AuthenticationServices
 enum AccountSession {
     static let userIDKey = "appleUserID"
     static let nameKey = "appleDisplayName"
+    static let usernameKey = "appleUsername"
+    static let bioKey = "appleBio"
 
     static func apply(_ authorization: ASAuthorization) {
         guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else { return }
@@ -46,7 +48,7 @@ struct SignInView: View {
                     .font(.system(size: 32, weight: .semibold, design: .serif))
                     .foregroundStyle(SyncTheme.ink)
                     .multilineTextAlignment(.center)
-                Text("Your library lives in iCloud on this Apple ID. Sign in so it can follow you to a new phone.")
+                Text("Your library lives in iCloud on this Apple ID, including saved videos. Sign in so it follows you when you log out and back in.")
                     .font(.system(size: 16))
                     .foregroundStyle(SyncTheme.inkMuted)
                     .multilineTextAlignment(.center)
@@ -72,16 +74,99 @@ struct SignInView: View {
 
 struct AccountSettingsSection: View {
     @AppStorage(AccountSession.nameKey) private var displayName = ""
+    @AppStorage(AccountSession.usernameKey) private var username = ""
 
     var body: some View {
         Section("Account") {
-            Text(displayName.isEmpty ? "Signed in with Apple" : displayName)
-                .foregroundStyle(SyncTheme.ink)
-                .listRowBackground(SyncTheme.paperRaised)
-            Text("Saves and collections sync with iCloud. Photos and videos on this phone still stay in the app files until we move those too. For you headlines stay on-device.")
-                .font(.system(size: 13))
-                .foregroundStyle(SyncTheme.inkMuted)
-                .listRowBackground(SyncTheme.paperRaised)
+            NavigationLink(value: Route.profile) {
+                HStack(spacing: 14) {
+                    ZStack {
+                        Circle().fill(SyncTheme.ink)
+                        Text(initial)
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(SyncTheme.paper)
+                    }
+                    .frame(width: 44, height: 44)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(displayName.isEmpty ? "You" : displayName)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(SyncTheme.ink)
+                        Text(username.isEmpty ? "View profile" : "@\(username)")
+                            .font(.system(size: 13))
+                            .foregroundStyle(SyncTheme.inkMuted)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 4)
+            }
+            .listRowBackground(SyncTheme.paperRaised)
         }
+    }
+
+    private var initial: String {
+        let source = displayName.isEmpty ? "Y" : displayName
+        return String(source.prefix(1)).uppercased()
+    }
+}
+
+struct AccountProfileView: View {
+    @AppStorage(AccountSession.nameKey) private var displayName = ""
+    @AppStorage(AccountSession.usernameKey) private var username = ""
+    @AppStorage(AccountSession.bioKey) private var bio = ""
+    @AppStorage(AccountSession.userIDKey) private var userID = ""
+
+    var body: some View {
+        List {
+            Section {
+                HStack {
+                    Spacer()
+                    ZStack {
+                        Circle().fill(SyncTheme.ink)
+                        Text(initial)
+                            .font(.system(size: 32, weight: .bold))
+                            .foregroundStyle(SyncTheme.paper)
+                    }
+                    .frame(width: 88, height: 88)
+                    Spacer()
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+
+            Section("Profile") {
+                TextField("Name", text: $displayName)
+                    .textContentType(.name)
+                    .foregroundStyle(SyncTheme.ink)
+                    .listRowBackground(SyncTheme.paperRaised)
+                TextField("Username", text: $username)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textContentType(.username)
+                    .foregroundStyle(SyncTheme.ink)
+                    .listRowBackground(SyncTheme.paperRaised)
+                TextField("Bio", text: $bio, axis: .vertical)
+                    .lineLimit(3...6)
+                    .foregroundStyle(SyncTheme.ink)
+                    .listRowBackground(SyncTheme.paperRaised)
+            }
+
+            Section {
+                Text(userID.isEmpty
+                     ? "Sign in with Apple from the welcome screen to keep this profile on your Apple ID."
+                     : "Signed in with Apple. Saves, collections, and videos sync with iCloud on this Apple ID.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(SyncTheme.inkMuted)
+                    .listRowBackground(SyncTheme.paperRaised)
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .syncScreen()
+        .navigationTitle("Profile")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var initial: String {
+        let source = displayName.isEmpty ? "Y" : displayName
+        return String(source.prefix(1)).uppercased()
     }
 }

@@ -5,3 +5,4 @@ build/
 xcuserdata/
 ExportOptions.plist
 sync/BundledAPIKeys.swift
+website/data/waitlist.json

@@ -38,9 +38,10 @@ struct ElevenLabsVoice: Identifiable, Equatable, Sendable {
 }
 
 enum ElevenLabsSpeech {
-    static let defaultVoice = "nPczCjzI2devNBz1zQrb"
-    static let defaultVoiceName = "Brian"
+    static let defaultVoice = "FGY2WhTYpPnrIDTdsKH5"
+    static let defaultVoiceName = "Laura"
     private static let blockedVoiceIDs: Set<String> = ["Xb7hH8G0CnM2EvxU5F7n"]
+    private static let retiredDefault = "nPczCjzI2devNBz1zQrb"
     static let voiceIDKey = "elevenLabsVoiceID"
     static let voiceNameKey = "elevenLabsVoiceName"
     private static var memoryID = ""
@@ -49,8 +50,14 @@ enum ElevenLabsSpeech {
 
     static var voiceID: String {
         get {
-            if blockedVoiceIDs.contains(memoryID) { memoryID = "" }
+            if blockedVoiceIDs.contains(memoryID) || memoryID == retiredDefault { memoryID = "" }
             if !memoryID.isEmpty { return memoryID }
+            let stored = (AppGroup.defaults?.string(forKey: voiceIDKey) ?? UserDefaults.standard.string(forKey: voiceIDKey) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !stored.isEmpty, stored != retiredDefault, !blockedVoiceIDs.contains(stored) {
+                memoryID = stored
+                return stored
+            }
             memoryID = defaultVoice
             memoryName = defaultVoiceName
             UserDefaults.standard.set(defaultVoice, forKey: voiceIDKey)
@@ -70,11 +77,11 @@ enum ElevenLabsSpeech {
         get {
             if !memoryName.isEmpty { return memoryName }
             if let stored = AppGroup.defaults?.string(forKey: voiceNameKey), !stored.isEmpty {
-                memoryName = stored.lowercased() == "alice" ? defaultVoiceName : stored
+                memoryName = ["alice", "brian"].contains(stored.lowercased()) ? defaultVoiceName : stored
                 return memoryName
             }
             let stored = UserDefaults.standard.string(forKey: voiceNameKey) ?? ""
-            return stored.isEmpty || stored.lowercased() == "alice" ? defaultVoiceName : stored
+            return stored.isEmpty || ["alice", "brian"].contains(stored.lowercased()) ? defaultVoiceName : stored
         }
         set {
             memoryName = newValue

@@ -8,6 +8,38 @@ enum TikTokMedia {
         var video: Data?
     }
 
+    static func canonicalVideoURL(from url: URL) async -> URL {
+        let page = await resolved(url)
+        if MediaEmbed.tiktokID(from: page) != nil { return page }
+        var request = URLRequest(url: page)
+        request.timeoutInterval = 10
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("https://www.tiktok.com/", forHTTPHeaderField: "Referer")
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii)
+        else { return page }
+        for candidate in [
+            meta(html, "og:url"),
+            canonicalLink(html),
+            meta(html, "twitter:url")
+        ] {
+            guard let next = URL(string: candidate), MediaEmbed.tiktokID(from: next) != nil else { continue }
+            return next
+        }
+        return page
+    }
+
+    private static func canonicalLink(_ html: String) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']"#,
+            options: .caseInsensitive
+        ) else { return "" }
+        let range = NSRange(html.startIndex..<html.endIndex, in: html)
+        guard let match = regex.firstMatch(in: html, range: range),
+              let href = Range(match.range(at: 1), in: html) else { return "" }
+        return String(html[href])
+    }
+
     static func pull(from url: URL) async -> Pulled? {
         let page = await resolved(url)
         var request = URLRequest(url: page)

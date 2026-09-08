@@ -30,9 +30,11 @@ struct RootView: View {
         ZStack {
             if showSplash {
                 SplashView()
+                    .preferredColorScheme(appearance.colorScheme)
                     .transition(.opacity)
             } else if userID.isEmpty {
                 SignInView()
+                    .preferredColorScheme(appearance.colorScheme)
                     .transition(.opacity)
             } else {
                 HomeView()
@@ -42,7 +44,6 @@ struct RootView: View {
         .animation(.easeInOut(duration: 0.45), value: showSplash)
         .animation(.easeInOut(duration: 0.45), value: userID)
         .tint(SyncTheme.ink)
-        .preferredColorScheme(appearance.colorScheme)
         .task {
             try? await Task.sleep(for: .milliseconds(1100))
             withAnimation(.easeOut(duration: 0.35)) {
@@ -56,6 +57,7 @@ struct RootView: View {
             if phase == .active {
                 CaptureService.importInbox(into: modelContext)
                 CaptureService.enrichUnprocessed(in: modelContext)
+                syncLibraryMedia()
             }
             if phase == .inactive || phase == .background {
                 try? modelContext.save()
@@ -64,6 +66,10 @@ struct RootView: View {
         .onAppear {
             DemoLibraryPurge.run(in: modelContext)
             drainPending(into: modelContext)
+            syncLibraryMedia()
+        }
+        .onChange(of: userID) { _, next in
+            if !next.isEmpty { syncLibraryMedia() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .synchronousInbox)) { _ in
             CaptureService.importInbox(into: modelContext)
@@ -94,6 +100,14 @@ struct RootView: View {
         }
         CaptureService.importInbox(into: context)
         CaptureService.enrichUnprocessed(in: context)
+    }
+
+    private func syncLibraryMedia() {
+        let items = (try? modelContext.fetch(FetchDescriptor<SaveItem>())) ?? []
+        let names = items.flatMap { item in
+            [item.mediaFileName, item.imageFileName] + item.slides
+        }
+        MediaCloud.reconcile(names: names)
     }
 }
 

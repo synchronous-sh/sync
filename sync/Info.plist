@@ -15,9 +15,16 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>sync transcribes speech from videos you save so they can be searched in your library.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Used only to transcribe audio already in videos you share, not to record from the microphone.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Used only in debug to send performance logs to your Mac.</string>
 </dict>
 </plist>

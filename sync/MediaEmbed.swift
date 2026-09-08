@@ -10,16 +10,41 @@ enum MediaEmbed {
 
     static func webPlayer(for save: SaveItem) -> URL? {
         guard let url = URL(string: save.sourceURL) else { return nil }
+        return webPlayer(for: url)
+    }
+
+    static func webPlayer(for url: URL) -> URL? {
         if let spotify = SpotifyLink.embedURL(from: url) {
             return spotify
         }
         if let id = tiktokID(from: url) {
-            return URL(string: "https://www.tiktok.com/player/v1/\(id)?music_info=0&description=0")
+            return tiktokPlayerURL(id: id)
+        }
+        if let instagram = instagramPlayer(from: url) {
+            return instagram
         }
         if let id = youtubeID(from: url) {
-            return URL(string: "https://www.youtube.com/embed/\(id)?playsinline=1")
+            return URL(string: "https://www.youtube.com/embed/\(id)?playsinline=1&rel=0")
         }
         return nil
+    }
+
+    static func instagramPlayer(from url: URL) -> URL? {
+        let host = (url.host ?? "").lowercased()
+        guard host.contains("instagram.com") else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        if let share = parts.firstIndex(of: "share"), parts.indices.contains(share + 2) {
+            let kind = parts[share + 1].lowercased() == "p" ? "p" : "reel"
+            let code = parts[share + 2].split(separator: "?").first.map(String.init) ?? parts[share + 2]
+            guard !code.isEmpty else { return nil }
+            return URL(string: "https://www.instagram.com/\(kind)/\(code)/embed/")
+        }
+        guard let idx = parts.firstIndex(where: { ["p", "reel", "reels", "tv"].contains($0.lowercased()) }),
+              parts.indices.contains(idx + 1) else { return nil }
+        let kind = parts[idx].lowercased() == "reels" ? "reel" : parts[idx].lowercased()
+        let code = parts[idx + 1].split(separator: "?").first.map(String.init) ?? parts[idx + 1]
+        guard !code.isEmpty else { return nil }
+        return URL(string: "https://www.instagram.com/\(kind)/\(code)/embed/")
     }
 
     static func playerHeight(for save: SaveItem) -> CGFloat? {
@@ -29,6 +54,10 @@ enum MediaEmbed {
             return SpotifyLink.compactEmbed(url) ? 168 : 360
         }
         return 420
+    }
+
+    static func tiktokPlayerURL(id: String) -> URL? {
+        URL(string: "https://www.tiktok.com/player/v1/\(id)?autoplay=0&loop=0&progress_bar=1&play_button=1&volume_control=1&fullscreen_button=1&timestamp=1&music_info=1&description=1&rel=0&native_context_menu=1")
     }
 
     static func tiktokID(from url: URL) -> String? {
@@ -68,8 +97,10 @@ enum MediaEmbed {
 struct SaveMediaPlayer: View {
     let save: SaveItem
     @State private var playing = false
+    @State private var mediaTick = 0
 
     var body: some View {
+        let _ = mediaTick
         Group {
             if let local = MediaEmbed.localVideo(for: save) {
                 LocalVideoView(url: local)
@@ -109,6 +140,16 @@ struct SaveMediaPlayer: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .compositingGroup()
+        .task(id: save.mediaFileName) {
+            let had = MediaEmbed.localVideo(for: save) != nil
+            await MediaCloud.ensure([save.mediaFileName, save.imageFileName] + save.slides)
+            if !had, MediaEmbed.localVideo(for: save) != nil {
+                mediaTick += 1
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .mediaCloudReady)) { _ in
+            mediaTick += 1
+        }
     }
 
     @ViewBuilder

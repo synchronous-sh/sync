@@ -2,6 +2,41 @@ import SwiftUI
 import UIKit
 import SafariServices
 
+// #region agent log
+enum AgentDebug {
+    static func log(_ hyp: String, _ loc: String, _ msg: String, _ data: [String: Any] = [:]) {
+        DispatchQueue.global(qos: .utility).async {
+            let payload: [String: Any] = [
+                "sessionId": "ca08bb",
+                "hypothesisId": hyp,
+                "location": loc,
+                "message": msg,
+                "timestamp": Date().timeIntervalSince1970 * 1000,
+                "data": data
+            ]
+            guard JSONSerialization.isValidJSONObject(payload),
+                  let json = try? JSONSerialization.data(withJSONObject: payload) else { return }
+            let path = "/Users/aadikatyal/Dev/synchronous/sync/.cursor/debug-ca08bb.log"
+            if let handle = FileHandle(forWritingAtPath: path) {
+                handle.seekToEndOfFile()
+                handle.write(json)
+                handle.write(Data([0x0A]))
+                try? handle.close()
+            } else {
+                FileManager.default.createFile(atPath: path, contents: json + Data([0x0A]))
+            }
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:7565/ingest/d21a2c93-da16-4e0a-b4e2-7d3385321591")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("ca08bb", forHTTPHeaderField: "X-Debug-Session-Id")
+            request.httpBody = json
+            request.timeoutInterval = 1
+            URLSession.shared.dataTask(with: request).resume()
+        }
+    }
+}
+// #endregion
+
 enum AppAppearance: String, CaseIterable, Identifiable {
     case system, light, dark
 
@@ -94,10 +129,253 @@ extension View {
         modifier(SyncScreenModifier())
     }
 
-    func syncPullToRefresh(_ action: @escaping () async -> Void) -> some View {
-        scrollBounceBehavior(.always, axes: .vertical)
+    func syncPullToRefresh(caption: String = "Fetching stories", _ action: @escaping () async -> Void) -> some View {
+        modifier(BrandRefreshModifier(caption: caption, action: action))
+    }
+
+    func syncSwipeBack() -> some View {
+        modifier(SwipeBackModifier())
+    }
+}
+
+private struct SwipeBackInstalledKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private extension EnvironmentValues {
+    var swipeBackInstalled: Bool {
+        get { self[SwipeBackInstalledKey.self] }
+        set { self[SwipeBackInstalledKey.self] = newValue }
+    }
+}
+
+private struct SwipeBackModifier: ViewModifier {
+    @Environment(\.swipeBackInstalled) private var alreadyInstalled
+
+    func body(content: Content) -> some View {
+        if alreadyInstalled {
+            content
+        } else {
+            content
+                .background(SwipeBackEnabler())
+                .environment(\.swipeBackInstalled, true)
+        }
+    }
+}
+
+private struct SwipeBackEnabler: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ uiViewController: Controller, context: Context) {
+        uiViewController.arm()
+    }
+
+    final class Controller: UIViewController, UIGestureRecognizerDelegate {
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            arm()
+        }
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            arm()
+        }
+
+        func arm() {
+            view.backgroundColor = .clear
+            view.isUserInteractionEnabled = false
+            guard let nav = navigationController ?? parent?.navigationController else { return }
+            nav.interactivePopGestureRecognizer?.isEnabled = true
+            nav.interactivePopGestureRecognizer?.delegate = self
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            (navigationController?.viewControllers.count ?? 0) > 1
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+    }
+}
+
+private struct BrandRefreshModifier: ViewModifier {
+    var caption: String
+    var action: () async -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .scrollBounceBehavior(.always, axes: .vertical)
             .background(ScrollBounceFix())
-            .refreshable { await action() }
+            .background(BrandRefreshHook(inverted: colorScheme == .dark, caption: caption, action: action))
+    }
+}
+
+struct SyncRefreshMark: View {
+    var inverted: Bool
+    var caption = "Fetching stories"
+
+    var body: some View {
+        HStack(spacing: 10) {
+            SparkleThinking(label: "", iconSize: 32, inverted: inverted, brandIcon: true)
+                .frame(width: 32, height: 32)
+            Text(caption)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle((inverted ? Color.white : SyncTheme.ink).opacity(0.82))
+        }
+    }
+}
+
+private struct BrandRefreshHook: UIViewRepresentable {
+    var inverted: Bool
+    var caption: String
+    var action: () async -> Void
+
+    func makeCoordinator() -> Watcher { Watcher() }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.inverted = inverted
+        context.coordinator.caption = caption
+        context.coordinator.action = action
+        DispatchQueue.main.async { context.coordinator.attach(from: uiView) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { context.coordinator.attach(from: uiView) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { context.coordinator.attach(from: uiView) }
+    }
+
+    final class Watcher: NSObject {
+        var inverted = true
+        var caption = "Fetching stories"
+        var action: () async -> Void = {}
+        private weak var scroll: UIScrollView?
+        private var refreshing = false
+        private var host: UIHostingController<SyncRefreshMark>?
+        private var offsetWatch: NSKeyValueObservation?
+
+        func attach(from view: UIView) {
+            if let found = nearestVerticalScroll(from: view) {
+                hook(found)
+            }
+        }
+
+        private func isVerticalList(_ scroll: UIScrollView) -> Bool {
+            guard scroll.bounds.height > 90 else { return false }
+            return scroll.contentSize.width <= scroll.bounds.width + 40
+        }
+
+        private func firstVertical(in view: UIView) -> UIScrollView? {
+            var found: [UIScrollView] = []
+            collectScrolls(in: view, into: &found)
+            return found.filter(isVerticalList).max { $0.bounds.height < $1.bounds.height }
+        }
+
+        private func nearestVerticalScroll(from view: UIView) -> UIScrollView? {
+            var node: UIView? = view
+            while let current = node {
+                if let scroll = current as? UIScrollView, isVerticalList(scroll) {
+                    return scroll
+                }
+                if let parent = current.superview, let found = firstVertical(in: parent) {
+                    return found
+                }
+                node = current.superview
+            }
+            return nil
+        }
+
+        private func collectScrolls(in view: UIView, into result: inout [UIScrollView]) {
+            if let scroll = view as? UIScrollView {
+                result.append(scroll)
+            }
+            for child in view.subviews {
+                collectScrolls(in: child, into: &result)
+            }
+        }
+
+        private func hook(_ scroll: UIScrollView) {
+            if self.scroll !== scroll {
+                self.scroll?.refreshControl = nil
+                offsetWatch = nil
+                self.scroll = scroll
+                offsetWatch = scroll.observe(\.contentOffset, options: .new) { [weak self] scroll, _ in
+                    self?.updateMarkVisibility(on: scroll)
+                }
+            }
+            scroll.alwaysBounceVertical = true
+            scroll.bounces = true
+            installRefresh(on: scroll)
+            updateMarkVisibility(on: scroll)
+        }
+
+        private func installRefresh(on scroll: UIScrollView) {
+            if host == nil {
+                let next = UIHostingController(rootView: SyncRefreshMark(inverted: inverted, caption: caption))
+                next.view.backgroundColor = .clear
+                next.view.isUserInteractionEnabled = false
+                next.view.alpha = 0
+                host = next
+            } else {
+                host?.rootView = SyncRefreshMark(inverted: inverted, caption: caption)
+            }
+            let refresh = scroll.refreshControl ?? UIRefreshControl()
+            refresh.tintColor = .clear
+            if scroll.refreshControl == nil {
+                refresh.addTarget(self, action: #selector(pulled), for: .valueChanged)
+                scroll.refreshControl = refresh
+            }
+            guard let mark = host?.view else { return }
+            if mark.superview !== refresh {
+                mark.removeFromSuperview()
+                refresh.addSubview(mark)
+                mark.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    mark.centerXAnchor.constraint(equalTo: refresh.centerXAnchor),
+                    mark.bottomAnchor.constraint(equalTo: refresh.bottomAnchor, constant: -6),
+                    mark.heightAnchor.constraint(equalToConstant: 52),
+                    mark.widthAnchor.constraint(greaterThanOrEqualToConstant: 180)
+                ])
+            }
+            hideSpinners(in: refresh)
+        }
+
+        private func updateMarkVisibility(on scroll: UIScrollView) {
+            let pull = -scroll.contentOffset.y - scroll.adjustedContentInset.top
+            host?.view.alpha = (refreshing || pull > 18) ? 1 : min(1, max(0, (pull - 8) / 28))
+        }
+
+        private func hideSpinners(in view: UIView) {
+            for child in view.subviews {
+                if child === host?.view { continue }
+                if child is UIActivityIndicatorView || String(describing: type(of: child)).contains("Refresh") {
+                    child.alpha = 0
+                }
+                hideSpinners(in: child)
+            }
+        }
+
+        @objc private func pulled() {
+            guard let scroll, !refreshing else { return }
+            refreshing = true
+            hideSpinners(in: scroll.refreshControl ?? UIView())
+            updateMarkVisibility(on: scroll)
+            Task { @MainActor in
+                await action()
+                scroll.refreshControl?.endRefreshing()
+                self.refreshing = false
+                if let scroll = self.scroll {
+                    self.updateMarkVisibility(on: scroll)
+                }
+            }
+        }
     }
 }
 

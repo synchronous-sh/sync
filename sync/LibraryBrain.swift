@@ -138,7 +138,7 @@ enum LibraryBrain {
         context: ModelContext
     ) {
         if let summary = clean(result.summary), summary.count >= 24 {
-            save.summary = String(summary.prefix(1600))
+            save.summary = String(summary.prefix(5000))
         }
         if !TitleLock.contains(save.saveID) {
             let proposed = clean(result.title).map { String($0.prefix(80)) }
@@ -264,7 +264,7 @@ enum LibraryBrain {
         Never invent a niche (makeup, recipes, fashion, gym) unless it is visible, spoken, or written.
 
         title: 6–10 word library label of what the save is actually about, written after the summary. Sentence case. Never the viral overlay, never ALL CAPS, never a joke hook ("bends the knee", "you won't believe"). Example: "How Google settled the Epic Play billing fight" not "GOOGLE BENDS THE KNEE".
-        summary: one tight paragraph (what this is and the point), then a blank line, then 3–5 lines that each start with "- " for the takeaways, steps, or facts. Use \\n for line breaks inside the JSON string. Ground every claim. No hashtags.
+        summary: one paragraph (what this is and why it matters), then a blank line, then 4–6 lines that each start with "- " for takeaways, steps, names, and facts. Use \\n for line breaks inside the JSON string. Ground every claim. No hashtags.
         topics: 3–6 lowercase topics taken from the actual content.
         entities: people, products, places, handles actually shown. Preserve casing.
         collections: 0–2 names. Prefer these existing collections: \(bags). Invent a name only if none fit.
@@ -367,9 +367,9 @@ enum AnthropicLibrary {
         parts.append(ContentPart(type: "text", text: material, source: nil))
         let body = MessageRequest(
             model: "claude-haiku-4-5-20251001",
-            max_tokens: 1100,
+            max_tokens: 1200,
             temperature: 0.1,
-            system: "Summarize only the attached frames, OCR, and transcript. JSON object only. Summary must be a paragraph then - bullets. No markdown fences.",
+            system: "Summarize only the attached frames, OCR, and transcript. JSON object only. Summary must be one paragraph then - bullets. No markdown fences.",
             messages: [.init(role: "user", content: parts)]
         )
         request.httpBody = try? JSONEncoder().encode(body)
@@ -430,7 +430,15 @@ enum AnthropicLibrary {
             return await streamReply(request: request, onDelta: onDelta)
         }
         do {
+            let t0 = CFAbsoluteTimeGetCurrent()
             let (data, response) = try await URLSession.shared.data(for: request)
+            // #region agent log
+            AgentDebug.log("E", "LibraryBrain.swift:reply", "llm_done", [
+                "ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000),
+                "tokens": maxTokens,
+                "ok": (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+            ])
+            // #endregion
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 return nil
             }

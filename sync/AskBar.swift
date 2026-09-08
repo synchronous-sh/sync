@@ -140,47 +140,111 @@ struct SparkleThinking: View {
     var label: String = "Thinking…"
     var size: CGFloat = 15
     var iconSize: CGFloat? = nil
-    @State private var shine = false
+    var inverted = false
+    var brandIcon = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let mark = iconSize ?? max(size + 2, 17)
+        Group {
+            if brandIcon {
+                brandRow
+            } else {
+                sparkleRow
+            }
+        }
+        .accessibilityLabel(label.isEmpty ? "Thinking" : label)
+        .onAppear {
+            shine = false
+            withAnimation(.linear(duration: 1.15).repeatForever(autoreverses: false)) {
+                shine = true
+            }
+        }
+    }
+
+    @State private var shine = false
+
+    private var mark: CGFloat {
+        iconSize ?? (brandIcon ? 72 : max(size + 2, 17))
+    }
+
+    private var sparkleRow: some View {
+        let dim = inverted ? Color.white.opacity(0.28) : SyncTheme.ink.opacity(0.32)
+        let bright = inverted ? Color.white : Color.white
         let row = HStack(spacing: 6) {
             Image(systemName: "sparkles")
                 .font(.system(size: mark, weight: .semibold))
-            Text(label)
-                .font(.system(size: size, weight: .medium))
+            if !label.isEmpty {
+                Text(label)
+                    .font(.system(size: size, weight: .medium))
+                    .lineLimit(1)
+            }
         }
-        row
-            .foregroundStyle(SyncTheme.ink.opacity(0.32))
+        return row
+            .foregroundStyle(dim)
             .overlay {
                 row
-                    .foregroundStyle(Color.white)
-                    .mask {
-                        GeometryReader { geo in
-                            let w = max(geo.size.width, 1)
-                            let band = max(w * 0.38, 22)
-                            LinearGradient(
-                                stops: [
-                                    .init(color: .clear, location: 0),
-                                    .init(color: .white.opacity(0.15), location: 0.28),
-                                    .init(color: .white, location: 0.5),
-                                    .init(color: .white.opacity(0.15), location: 0.72),
-                                    .init(color: .clear, location: 1)
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                            .frame(width: band)
-                            .offset(x: shine ? w : -band)
-                        }
-                    }
+                    .foregroundStyle(bright)
+                    .mask { shineMask }
                     .allowsHitTesting(false)
             }
-            .onAppear {
-                withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) {
-                    shine = true
-                }
+    }
+
+    private var lightOnDark: Bool {
+        inverted || colorScheme == .dark
+    }
+
+    private var brandMark: some View {
+        Image("BrandLogo")
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: mark, height: mark)
+            .colorScheme(lightOnDark ? .dark : .light)
+            .opacity(0.32)
+            .overlay {
+                Image("BrandLogo")
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: mark, height: mark)
+                    .colorScheme(lightOnDark ? .dark : .light)
+                    .mask { shineMask }
+                    .allowsHitTesting(false)
             }
-            .accessibilityLabel(label)
+    }
+
+    private var brandRow: some View {
+        HStack(spacing: 10) {
+            brandMark
+            if !label.isEmpty {
+                Text(label)
+                    .font(.system(size: size, weight: .medium))
+                    .foregroundStyle((lightOnDark ? Color.white : SyncTheme.ink).opacity(0.72))
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: label.isEmpty ? nil : .infinity)
+    }
+
+    private var shineMask: some View {
+        GeometryReader { geo in
+            let w = max(geo.size.width, 1)
+            let h = max(geo.size.height, 1)
+            let band = max(w * 0.4, 14)
+            LinearGradient(
+                colors: [
+                    .clear,
+                    .white.opacity(0.15),
+                    .white,
+                    .white.opacity(0.15),
+                    .clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: band, height: h)
+            .offset(x: shine ? w : -band)
+        }
+        .clipped()
     }
 }

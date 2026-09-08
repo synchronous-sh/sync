@@ -16,11 +16,13 @@ enum MediaStore {
     static func save(_ data: Data, id: UUID, ext: String = "jpg") -> String {
         let name = "\(id.uuidString).\(ext)"
         try? data.write(to: directory().appendingPathComponent(name), options: .atomic)
+        MediaCloud.push(name)
         return name
     }
 
     static func save(_ data: Data, named name: String) -> String {
         try? data.write(to: directory().appendingPathComponent(name), options: .atomic)
+        MediaCloud.push(name)
         return name
     }
 
@@ -35,11 +37,16 @@ enum MediaStore {
         try? FileManager.default.removeItem(at: dest)
         do {
             try FileManager.default.copyItem(at: source, to: dest)
+            MediaCloud.push(name)
             return name
         } catch {
             guard let data = try? Data(contentsOf: source) else { return nil }
             try? data.write(to: dest, options: .atomic)
-            return FileManager.default.fileExists(atPath: dest.path) ? name : nil
+            if FileManager.default.fileExists(atPath: dest.path) {
+                MediaCloud.push(name)
+                return name
+            }
+            return nil
         }
     }
 

@@ -23,7 +23,7 @@ struct DestinationRouter: View {
             case .recap:
                 RecapView()
             case .forYou:
-                ForYouView()
+                VideosTabRedirect()
             case .story(let id):
                 if let post = FeedStore.load().first(where: { $0.id == id }) {
                     StoryDetailView(post: post)
@@ -33,13 +33,49 @@ struct DestinationRouter: View {
                 }
             case .settings:
                 SettingsView()
+            case .profile:
+                AccountProfileView()
             case .course(let id):
+                CourseOverviewView(pathID: id)
+                    .syncSwipeBack()
+            case .path(let id):
                 CourseDetailView(pathID: id)
+                    .syncSwipeBack()
             case .lesson(let pathID, let index):
                 LessonDetailView(pathID: pathID, index: index)
+                    .syncSwipeBack()
+            case .books:
+                BookSummariesListView()
+                    .syncSwipeBack()
+            case .courses:
+                CourseCatalogListView()
+                    .syncSwipeBack()
+            case .news:
+                HomeNewsListView()
+                    .syncSwipeBack()
             }
         }
-        .toolbar(.visible, for: .navigationBar)
+        .toolbar(showsNavBar ? .visible : .hidden, for: .navigationBar)
+    }
+
+    private var showsNavBar: Bool {
+        switch route {
+        case .course, .path, .lesson, .books, .courses, .news: false
+        default: true
+        }
+    }
+}
+
+private struct VideosTabRedirect: View {
+    @Environment(\.selectedAppTab) private var selectedAppTab
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Color.clear
+            .task {
+                selectedAppTab.wrappedValue = .videos
+                dismiss()
+            }
     }
 }
 
@@ -479,8 +515,10 @@ struct LibraryIntelligenceSection: View {
 }
 
 struct ForYouSettingsSection: View {
+    @State private var openai = ""
     @State private var eleven = ""
     @State private var news = ""
+    @State private var openaiSaved = false
     @State private var elevenSaved = false
     @State private var newsSaved = false
 
@@ -516,6 +554,18 @@ struct ForYouSettingsSection: View {
                 .listRowBackground(SyncTheme.paperRaised)
             }
 
+            if BundledAPIKeys.openai.isEmpty {
+                SecureField("OpenAI image key", text: $openai)
+                    .textContentType(.password)
+                    .listRowBackground(SyncTheme.paperRaised)
+                Button(openaiSaved ? "OpenAI image key saved" : "Save OpenAI image key") {
+                    OpenAIImageKey.save(openai)
+                    openaiSaved = OpenAIImageKey.isConfigured
+                }
+                .foregroundStyle(SyncTheme.ink)
+                .listRowBackground(SyncTheme.paperRaised)
+            }
+
             if BundledAPIKeys.elevenLabs.isEmpty {
                 SecureField("ElevenLabs API key", text: $eleven)
                     .textContentType(.password)
@@ -529,8 +579,10 @@ struct ForYouSettingsSection: View {
             }
         }
         .onAppear {
+            openai = OpenAIImageKey.load()
             eleven = ElevenLabsKey.load()
             news = NewsAPIKey.load()
+            openaiSaved = OpenAIImageKey.isConfigured
             elevenSaved = ElevenLabsKey.isConfigured
             newsSaved = NewsAPIKey.isConfigured
         }
@@ -541,11 +593,14 @@ struct SettingsView: View {
     @Query private var saves: [SaveItem]
     @Query private var collections: [CollectionItem]
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.selectedAppTab) private var selectedAppTab
     @Environment(\.dismiss) private var dismiss
     @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.dark.rawValue
     @AppStorage(WeeklyRecapNotify.enabledKey) private var weeklyRecap = false
     @AppStorage(CoachTour.restartKey) private var restartCoach = false
+    @AppStorage(CoachTour.fypRestartKey) private var restartFYPCoach = false
     @State private var exportURL: URL?
+    @State private var showingHowTo = false
     @State private var confirmingWipe = false
     @State private var confirmingSignOut = false
     @AppStorage(AccountSession.userIDKey) private var userID = ""
@@ -559,12 +614,29 @@ struct SettingsView: View {
 
             AccountSettingsSection()
 
-            Section("Saving") {
+            Section("Help") {
+                Button {
+                    showingHowTo = true
+                } label: {
+                    Text("How to use")
+                }
+                .foregroundStyle(SyncTheme.ink)
+                .listRowBackground(SyncTheme.paperRaised)
                 Button {
                     restartCoach = true
+                    selectedAppTab.wrappedValue = .home
                     dismiss()
                 } label: {
                     Text("Walk through Home")
+                }
+                .foregroundStyle(SyncTheme.ink)
+                .listRowBackground(SyncTheme.paperRaised)
+                Button {
+                    restartFYPCoach = true
+                    selectedAppTab.wrappedValue = .videos
+                    dismiss()
+                } label: {
+                    Text("Walk through For you")
                 }
                 .foregroundStyle(SyncTheme.ink)
                 .listRowBackground(SyncTheme.paperRaised)
@@ -648,10 +720,12 @@ struct SettingsView: View {
                     Button("Sign out", role: .destructive) {
                         displayName = ""
                         userID = ""
+                        UserDefaults.standard.removeObject(forKey: AccountSession.usernameKey)
+                        UserDefaults.standard.removeObject(forKey: AccountSession.bioKey)
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("Are you sure?")
+                    Text("Your library and videos stay in iCloud. Sign in with the same Apple ID to get them back.")
                 }
                 .listRowBackground(SyncTheme.paperRaised)
             }
@@ -659,6 +733,10 @@ struct SettingsView: View {
         .scrollContentBackground(.hidden)
         .syncScreen()
         .navigationTitle("Settings")
+        .sheet(isPresented: $showingHowTo) {
+            HowToUseView()
+                .presentationBackground(SyncTheme.paper)
+        }
     }
 
     private func export() {

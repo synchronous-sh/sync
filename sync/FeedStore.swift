@@ -34,7 +34,7 @@ struct FeedPost: Codable, Identifiable, Hashable, Sendable {
         interest: String,
         createdAt: Date,
         publishedAt: Date = .now,
-        briefingReady: Bool = true
+        briefingReady: Bool = false
     ) {
         self.id = id
         self.saveID = saveID
@@ -67,7 +67,7 @@ struct FeedPost: Codable, Identifiable, Hashable, Sendable {
         interest = try c.decodeIfPresent(String.self, forKey: .interest) ?? ""
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? .now
         publishedAt = try c.decodeIfPresent(Date.self, forKey: .publishedAt) ?? createdAt
-        briefingReady = try c.decodeIfPresent(Bool.self, forKey: .briefingReady) ?? true
+        briefingReady = try c.decodeIfPresent(Bool.self, forKey: .briefingReady) ?? false
     }
 
     var articleSlug: String {
@@ -99,6 +99,12 @@ struct FeedPost: Codable, Identifiable, Hashable, Sendable {
         return URL(string: "https://synchronous.sh/article/\(articleSlug)?p=\(packed)") ?? shareURL
     }
 
+    var embedURL: String {
+        guard let source = URL(string: headlineURL),
+              let embed = MediaEmbed.webPlayer(for: source) else { return "" }
+        return embed.absoluteString
+    }
+
     var packedSharePayload: String? {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
@@ -109,6 +115,7 @@ struct FeedPost: Codable, Identifiable, Hashable, Sendable {
             "sourceName": sourceName,
             "headlineURL": headlineURL,
             "imageURL": imageURL,
+            "embedURL": embedURL,
             "publishedAt": iso.string(from: publishedAt)
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: body, options: []) else { return nil }
@@ -126,7 +133,7 @@ struct FeedPost: Codable, Identifiable, Hashable, Sendable {
 enum FeedCopy {
     static func blurb(_ raw: String) -> String {
         var text = raw.replacingOccurrences(of: "\\n", with: "\n")
-        let cut = ["\n- ", "\n•", "\n* "]
+        let cut = ["\n- ", "\n-", "\n•", "\n* ", "\n*"]
         for marker in cut {
             if let range = text.range(of: marker) {
                 text = String(text[..<range.lowerBound])
@@ -137,20 +144,20 @@ enum FeedCopy {
             .replacingOccurrences(of: "  ", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let sentences = splitSentences(collapsed).filter { !isChrome($0) }
-        let target = 260
-        let cap = 320
+        let target = 420
+        let cap = 520
         var picked: [String] = []
         var length = 0
         for sentence in sentences {
             let next = picked.isEmpty ? sentence.count : length + 1 + sentence.count
-            if picked.count >= 2, next > target { break }
+            if picked.count >= 4, next > target { break }
             if !picked.isEmpty, next > cap { break }
             picked.append(sentence)
             length = next
-            if picked.count == 3 || length >= target { break }
+            if picked.count == 5 || length >= target { break }
         }
         if picked.isEmpty {
-            return String(collapsed.prefix(280))
+            return String(collapsed.prefix(480))
         }
         return picked.joined(separator: " ")
     }
@@ -252,20 +259,46 @@ enum FeedStore {
         saveTitles(titles)
     }
 
+    private static var memory: [FeedPost]?
+
     static func load() -> [FeedPost] {
-        guard let url = fileURL, let data = try? Data(contentsOf: url) else { return [] }
+        if let memory { return memory }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        guard let url = fileURL, let data = try? Data(contentsOf: url) else {
+            memory = []
+            return []
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let all = (try? decoder.decode([FeedPost].self, from: data)) ?? []
-        return all.filter { FeedNews.isFresh($0.publishedAt) }
+        let fresh = all.filter { FeedNews.isFresh($0.publishedAt) }
+        memory = fresh
+        // #region agent log
+        AgentDebug.log("A", "FeedStore.swift:load", "disk", [
+            "ms": Int((CFAbsoluteTimeGetCurrent() - t0) * 1000),
+            "n": fresh.count,
+            "bytes": data.count
+        ])
+        // #endregion
+        return fresh
     }
 
     static func save(_ posts: [FeedPost]) {
+        // #region agent log
+        let t0 = CFAbsoluteTimeGetCurrent()
+        // #endregion
         guard let url = fileURL else { return }
         let clipped = Array(posts.filter { FeedNews.isFresh($0.publishedAt) }.suffix(200))
+        memory = clipped
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         try? encoder.encode(clipped).write(to: url, options: .atomic)
+        // #region agent log
+        let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+        if ms >= 8 {
+            AgentDebug.log("D", "FeedStore.swift:save", "store_save", ["ms": ms, "n": clipped.count])
+        }
+        // #endregion
     }
 
     static func append(_ extra: [FeedPost]) {

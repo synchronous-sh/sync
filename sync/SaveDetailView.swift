@@ -178,7 +178,7 @@ struct SaveDetailView: View {
             .padding(20)
             .padding(.bottom, 8)
         }
-        .syncPullToRefresh {
+        .syncPullToRefresh(caption: "Fetching story") {
             LibraryBrain.pull(context: modelContext, reread: save)
         }
         .onAppear {
@@ -359,36 +359,47 @@ struct SaveDetailView: View {
 struct SaveSummaryBlock: View {
     let text: String
 
-    private var parts: (paragraph: String, bullets: [String]) {
+    private var parts: (paragraphs: [String], bullets: [String]) {
         let lines = text
             .replacingOccurrences(of: "\\n", with: "\n")
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
         var bullets: [String] = []
-        var para: [String] = []
+        var paragraphs: [String] = []
+        var current: [String] = []
+        func flush() {
+            let joined = current.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+            if !joined.isEmpty { paragraphs.append(joined) }
+            current = []
+        }
         for line in lines {
-            guard !line.isEmpty else { continue }
+            if line.isEmpty {
+                flush()
+                continue
+            }
             if line.hasPrefix("- ") || line.hasPrefix("• ") || line.hasPrefix("* ") {
+                flush()
                 let clipped = line.drop { $0 == "-" || $0 == "•" || $0 == "*" || $0 == " " }
                 bullets.append(String(clipped))
             } else {
-                para.append(line)
+                current.append(line)
             }
         }
-        return (para.joined(separator: " "), bullets)
+        flush()
+        return (paragraphs, bullets)
     }
 
     var body: some View {
         let split = parts
-        VStack(alignment: .leading, spacing: 12) {
-            if !split.paragraph.isEmpty {
-                Text(split.paragraph)
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(Array(split.paragraphs.enumerated()), id: \.offset) { _, paragraph in
+                Text(paragraph)
                     .font(.system(size: 17))
                     .foregroundStyle(SyncTheme.ink)
                     .lineSpacing(5)
             }
             if !split.bullets.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(Array(split.bullets.enumerated()), id: \.offset) { _, item in
                         HStack(alignment: .top, spacing: 8) {
                             Text("•")

@@ -80,81 +80,123 @@ private struct WalkPage {
     static let all: [WalkPage] = [
         WalkPage(
             title: "Your library for the internet",
-            body: "Share TikToks, Spotify, links, screenshots, and notes into sync. It reads them quietly. Later you search, ask, or catch up on For you.",
+            body: "Share TikToks, YouTube, Instagram, Spotify, Safari links, screenshots, and notes into sync. It reads them quietly. Later you search, ask, learn, or catch up on For you and News.",
             rows: [
-                ("square.and.arrow.up", "Share", "From TikTok, Instagram, Safari, Spotify, Photos. Share and pick sync."),
+                ("square.and.arrow.up", "Share", "From another app, share and pick sync. The item lands in your library."),
                 ("plus", "Paste", "On Home, tap + if you already copied a link or want a note."),
-                ("info.circle", "This guide", "Always on Home, top left, if you want a recap."),
+                ("info.circle", "This guide", "Info on Home, or You → Settings → How to use."),
+            ]
+        ),
+        WalkPage(
+            title: "The five tabs",
+            body: "Everything lives on the bar at the bottom.",
+            rows: [
+                ("house", "Home", "Courses, book courses, your library, and a few headlines."),
+                ("play.fill", "For you", "Full-screen photo briefings. Swipe like a story stack. Voice can read them."),
+                ("book.fill", "Learn", "XP, course shelves, and lessons you swipe through like cards."),
+                ("newspaper.fill", "News", "Top, U.S., World, History, Business, and the rest. Search stories."),
+                ("person.fill", "You", "Profile, library, courses you’ve started, collections, and Settings."),
             ]
         ),
         WalkPage(
             title: "Home",
-            body: "The top bar is how you move. Logo in the middle. Tools on the sides.",
+            body: "Greeting up top. Tools on the right. Scroll for learning, books, saves, and news.",
             rows: [
-                ("gearshape", "Settings", "Appearance, voice, export, account."),
-                ("info.circle", "How to use", "This walkthrough."),
-                ("square.stack", "Collections", "Folders that fill from topics in your saves."),
-                ("sparkles", "Search / Ask", "Find a save or ask across the library."),
-                ("play.square.stack", "For you", "Full-screen news from what you save."),
+                ("info.circle", "How to use", "This walkthrough. Replay the spotlight tour from Settings."),
+                ("magnifyingglass", "Search", "Find a save or ask across the library."),
                 ("plus", "Save", "Paste a URL or write a note."),
+                ("sparkles", "Featured course", "Hero card jumps into a path. Progress is kept."),
+                ("arrow.down.to.line", "Pull to refresh", "Re-read new saves and refresh Home news."),
             ]
         ),
         WalkPage(
-            title: "Saves",
-            body: "Tap a card on Home or Recent. You get a summary, topics, and the original.",
+            title: "Courses",
+            body: "Continue learning on Home, or open the Learn tab for the full catalog and your XP.",
             rows: [
+                ("rectangle.stack", "See all", "Opens every course path."),
+                ("book", "Learn tab", "Level, XP, and shelves by topic."),
+                ("rectangle.on.rectangle", "Lessons", "Swipe sideways like flashcards. Continue picks up the page you were on."),
+                ("checkmark.circle", "Quiz", "Some lessons end in a quiz. Completing marks the lesson done."),
+            ]
+        ),
+        WalkPage(
+            title: "Book courses",
+            body: "These are full courses built from books — summaries plus lessons — not a bookshelf of covers only.",
+            rows: [
+                ("book.closed", "On Home", "The Book courses row. See all opens the complete list."),
+                ("text.book.closed", "Inside a book", "Same lesson player as courses: swipe pages, resume, quiz."),
+                ("person.crop.rectangle", "On You", "Courses you’ve started, including book courses, show under Courses."),
+            ]
+        ),
+        WalkPage(
+            title: "Your library",
+            body: "Saves from share, paste, and notes. Tap a card for the summary, topics, and original.",
+            rows: [
+                ("square.and.arrow.up", "Share sheet", "TikTok, Instagram, Safari, Spotify, Photos → sync."),
                 ("sparkles", "Ask this save", "Chat about the transcript, frames, or notes. The thread stays on that save."),
+                ("folder", "Collections", "Folders that fill from topics in your saves. On You → Collections."),
                 ("magnifyingglass", "Search", "Titles, people, topics, and the words inside saves."),
-                ("arrow.down.to.line", "Pull to refresh", "On Home, pull down to re-read new saves."),
+            ]
+        ),
+        WalkPage(
+            title: "News",
+            body: "Home shows a few headlines. The News tab is the full list, loaded in the background while you use the app.",
+            rows: [
+                ("newspaper", "Categories", "Top, U.S., World, History, Business, Technology, Science, and more."),
+                ("magnifyingglass", "Search stories", "Look up a person, company, or beat."),
+                ("photo", "Photos", "Stories with pictures show them on the card."),
+                ("arrow.up.right", "Understand this", "Opens the briefing page: source, date, save, ask, share."),
             ]
         ),
         WalkPage(
             title: "For you: the feed",
-            body: "Stories are full-screen photos with a briefing. Swipe up and down like a story stack. It keeps loading as you go.",
+            body: "Stories are full-screen photos with a briefing. Swipe up and down. It keeps loading as you go.",
             rows: [
-                ("hand.tap", "Tap the card", "Mute or unmute. Same as the speaker icon at the top. Unmute continues from where it stopped."),
+                ("hand.tap", "Mute on the photo", "A small tap in the center mutes or unmutes. Save and Ask do not pause the audio."),
                 ("arrow.up.arrow.down", "Swipe vertically", "Next or previous briefing."),
-                ("arrow.left", "Swipe left", "Open the full summary page for this story: source, date, save, ask."),
-                ("arrow.down", "Pull down on the first card", "Rebuild the feed from your library."),
+                ("arrow.left", "Swipe left", "Full summary: source, date, save, ask."),
+                ("arrow.down", "Pull down on the first card", "Rebuild the feed."),
             ]
         ),
         WalkPage(
             title: "For you: top icons",
-            body: "Dark bar at the top of the feed.",
+            body: "Dark bar at the top of the feed. Categories sit under it: For You, Business, Technology, and the rest.",
             rows: [
-                ("chevron.left", "Back", "Return to Home."),
-                ("waveform", "Voice", "Pick an ElevenLabs voice. You’ll hear a sample, then the card re-speaks."),
+                ("magnifyingglass", "Search", "Live headlines on a person, place, or beat. It does not fill from the category chips."),
+                ("waveform", "Voice", "ElevenLabs voices. You’ll hear a sample, then the card re-speaks. Default is Laura."),
                 ("speaker.wave.2.fill", "Mute", "Silence the briefing. Slash means it’s muted."),
-                ("arrow.clockwise", "Refresh", "Clear seen stories and pull a new mix from your saves."),
+                ("arrow.clockwise", "Refresh", "Clear seen stories and mix a new feed."),
             ]
         ),
         WalkPage(
             title: "For you: on the card",
-            body: "Bottom of each briefing.",
+            body: "Actions along the briefing.",
             rows: [
-                ("safari", "Read source", "Opens the original article in a tab in the app."),
-                ("bookmark", "Save", "On the summary page, keep this briefing in your library."),
-                ("square.and.arrow.up", "Share", "Sends a link to synchronous.sh/article/… with your briefing."),
+                ("safari", "Read source", "Original article in-app."),
+                ("bookmark", "Save", "Keep this briefing in your library."),
+                ("square.and.arrow.up", "Share", "A link on synchronous.sh with your briefing."),
                 ("sparkles", "Ask", "Chat about this story. Replies type out word by word."),
-                ("text.alignleft", "Why this", "If it came from a save, jumps to that item in your library."),
+                ("text.alignleft", "Why this", "If it came from a save, jumps to that item."),
             ]
         ),
         WalkPage(
-            title: "Talk to the AI",
-            body: "Sparkles opens Ask. Type a question. While it thinks you’ll see sparkles with a light sweeping across. Then the answer streams in. Lists use real bullets.",
+            title: "Ask",
+            body: "Sparkles opens Ask. While it thinks you’ll see sparkles. Then the answer streams in.",
             rows: [
-                ("sparkles", "On a save", "Ask what they said, what’s on screen, or what to remember."),
-                ("sparkles", "On For you", "Ask about the briefing, numbers, or why it matters."),
+                ("sparkles", "On a save", "What they said, what’s on screen, or what to remember."),
+                ("sparkles", "On For you or News", "The briefing, the numbers, or why it matters."),
                 ("sparkles", "From Home search", "Ask across everything you’ve saved."),
-                ("bubble.left.and.bubble.right", "Threads", "Conversations stay on that save or story. Clear if you want a fresh start."),
+                ("bubble.left.and.bubble.right", "Threads", "Stay on that save or story. Clear for a fresh start."),
             ]
         ),
         WalkPage(
-            title: "Voice",
-            body: "For you can speak the briefing. Pick a voice in Settings or from the waveform on the feed.",
+            title: "You and Settings",
+            body: "Profile, library, courses, collections. Gear opens Settings.",
             rows: [
-                ("waveform", "Voice", "ElevenLabs voices. You’ll hear a sample, then the card re-speaks."),
-                ("speaker.wave.2.fill", "Mute", "Silence the briefing from the top of For you."),
+                ("gearshape", "Settings", "Appearance, voice, export, account, API keys if you need them."),
+                ("map", "Walk through Home", "Replay the spotlight tour. Home scrolls to each row."),
+                ("play.square.stack", "Walk through For you", "Replay the feed tour."),
+                ("square.and.arrow.up", "Export", "Download your saves as JSON. Sign out does not delete the library on device until you wipe it."),
             ]
         ),
     ]
