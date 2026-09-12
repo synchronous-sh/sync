@@ -21,11 +21,17 @@ If both are empty:
 - Apple stays local-only (device session)
 - Google needs keys before it can complete sign-in
 
-## 2. Enable Apple
+## 2. Enable Apple (required for cloud Apple sign-in)
 
-1. Authentication → Providers → **Apple** → enable  
-2. **Client IDs**: add `sh.synchronous.sync`  
-3. Native Sign in with Apple usually needs no secret
+Do this in the **shared Supabase project** (dashboard — cannot be done from the iOS app alone):
+
+1. **Authentication → Providers → Apple** → toggle **Enable**
+2. **Client IDs**: `sh.synchronous.sync` (this app’s `PRODUCT_BUNDLE_IDENTIFIER`)
+3. Leave **Secret Key** empty for native iOS-only Sign in with Apple  
+   (no Services ID / `.p8` needed unless you also use Apple on web)
+4. Save
+
+If Apple works locally but fails after keys are set, the usual cause is a missing Client ID — Supabase rejects the token audience.
 
 ## 3. Enable Google
 
@@ -37,12 +43,16 @@ If both are empty:
 
 ## 4. Redirect URLs (Supabase dashboard)
 
-Authentication → URL Configuration → Redirect URLs:
+This app’s URL scheme is **`synchronous`** (bundle ID `sh.synchronous.sync`). OAuth callback: `synchronous://auth`.
 
-- `synchronous://auth`
-- `synchronous://**`
+Authentication → URL Configuration:
 
-The app uses `synchronous://auth` for the Google OAuth callback (`Info.plist` already registers the `synchronous` URL scheme).
+- **Site URL:** `synchronous://auth`
+- **Redirect URLs:**
+  - `synchronous://auth`
+  - `synchronous://**`
+
+Remove or demote old Expo values (`curious://…`, `exp://…`) so Google does not open the Expo app after sign-in.
 
 ## 5. Schema
 

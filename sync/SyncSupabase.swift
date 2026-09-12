@@ -7,7 +7,10 @@ import UIKit
 /// Thin Supabase Auth client (Apple id_token + Google OAuth PKCE).
 /// Uses the Auth REST API so we don't need the SPM package resolved to ship login.
 enum SyncSupabase {
+    /// Must match a Redirect URL allow-listed in the Supabase project.
+    /// Site URL / Redirect URLs should use this scheme (not the old Expo `curious://`).
     static let redirectURL = URL(string: "synchronous://auth")!
+    static let redirectScheme = "synchronous"
 
     struct Session: Codable, Equatable {
         var accessToken: String
@@ -86,7 +89,7 @@ enum SyncSupabase {
         ]
         guard let authURL = components?.url else { throw AuthError.badResponse }
 
-        let callbackURL = try await openAuthSession(url: authURL, callbackScheme: "synchronous")
+        let callbackURL = try await openAuthSession(url: authURL, callbackScheme: redirectScheme)
         if let error = queryValue("error_description", in: callbackURL)
             ?? queryValue("error", in: callbackURL) {
             throw AuthError.server(error.replacingOccurrences(of: "+", with: " "))

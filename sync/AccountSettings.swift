@@ -155,8 +155,12 @@ struct SignInView: View {
                     Task { await handleGoogle() }
                 } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: "g.circle.fill")
-                            .font(.system(size: 20, weight: .semibold))
+                        Image("GoogleLogo")
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                            .frame(width: 20, height: 20)
+                            .accessibilityHidden(true)
                         Text("Continue with Google")
                             .font(.system(size: 17, weight: .semibold))
                     }
@@ -174,15 +178,6 @@ struct SignInView: View {
                 .padding(.top, 12)
                 .disabled(isWorking)
                 .opacity(isWorking ? 0.7 : 1)
-
-                Text(SyncSupabase.isConfigured
-                     ? "Apple and Google both create a Supabase account session."
-                     : "Add your Supabase URL + anon key in SupabaseKeys.swift to turn on Google and cloud sync.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(SyncTheme.inkMuted)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 10)
-                    .padding(.horizontal, 28)
 
                 Spacer().frame(height: 40)
             }
