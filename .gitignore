@@ -5,4 +5,7 @@ build/
 xcuserdata/
 ExportOptions.plist
 sync/BundledAPIKeys.swift
+# Never compile example key stubs — Xcode syncs every .swift under sync/
+sync/*.example.swift
+**/SupabaseKeys.example.swift
 website/data/waitlist.json
