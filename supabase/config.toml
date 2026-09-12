@@ -1,0 +1,29 @@
+# synchronous — Supabase project config
+# Link with: npx supabase link --project-ref <friend-project-ref>
+project_id = "synchronous"
+
+[api]
+enabled = true
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+
+[auth]
+enabled = true
+site_url = "synchronous://auth"
+additional_redirect_urls = ["synchronous://**", "https://synchronous.sh/**"]
+enable_anonymous_sign_ins = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = true
+double_confirm_changes = true
+max_frequency = "1m"
+
+[storage]
+enabled = true
+
+[functions.ask-library]
+verify_jwt = true
+
+[functions.embed-save]
+verify_jwt = true

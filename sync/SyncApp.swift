@@ -55,6 +55,7 @@ struct RootView: View {
         .animation(.easeInOut(duration: 0.45), value: hasCompletedOnboarding)
         .tint(SyncTheme.ink)
         .task {
+            await AccountSession.restoreCloudSessionIfNeeded()
             try? await Task.sleep(for: .milliseconds(1100))
             withAnimation(.easeOut(duration: 0.35)) {
                 showSplash = false

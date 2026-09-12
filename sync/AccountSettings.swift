@@ -1,5 +1,6 @@
 import SwiftUI
 import AuthenticationServices
+import CryptoKit
 
 enum AccountSession {
     static let userIDKey = "appleUserID"
@@ -7,11 +8,16 @@ enum AccountSession {
     static let usernameKey = "appleUsername"
     static let bioKey = "appleBio"
     static let onboardingKey = "hasCompletedOnboarding"
+    static let appleUserKey = "appleIdentityUser"
 
-    static func apply(userID: String, fullName: PersonNameComponents?) {
+    static func apply(userID: String, fullName: PersonNameComponents?, appleUserID: String? = nil) {
         let trimmed = userID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         UserDefaults.standard.set(trimmed, forKey: userIDKey)
+
+        if let appleUserID, !appleUserID.isEmpty {
+            UserDefaults.standard.set(appleUserID, forKey: appleUserKey)
+        }
 
         let name = [fullName?.givenName, fullName?.familyName]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -22,23 +28,26 @@ enum AccountSession {
         }
     }
 
-    static func apply(_ authorization: ASAuthorization) {
+    static func applyLocalApple(_ authorization: ASAuthorization) {
         guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else { return }
-        apply(userID: credential.user, fullName: credential.fullName)
+        apply(userID: credential.user, fullName: credential.fullName, appleUserID: credential.user)
     }
 
     static func signOut() {
+        Task { await SyncSupabase.signOut() }
         UserDefaults.standard.removeObject(forKey: userIDKey)
         UserDefaults.standard.removeObject(forKey: nameKey)
         UserDefaults.standard.removeObject(forKey: usernameKey)
         UserDefaults.standard.removeObject(forKey: bioKey)
+        UserDefaults.standard.removeObject(forKey: appleUserKey)
     }
 
     /// Drops the local session if Apple reports the credential was revoked or deleted.
     static func refreshCredentialState(for userID: String) {
-        let trimmed = userID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        ASAuthorizationAppleIDProvider().getCredentialState(forUserID: trimmed) { state, _ in
+        let appleID = (UserDefaults.standard.string(forKey: appleUserKey) ?? userID)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !appleID.isEmpty else { return }
+        ASAuthorizationAppleIDProvider().getCredentialState(forUserID: appleID) { state, _ in
             switch state {
             case .revoked, .notFound:
                 DispatchQueue.main.async { signOut() }
@@ -47,6 +56,14 @@ enum AccountSession {
             @unknown default:
                 break
             }
+        }
+    }
+
+    @MainActor
+    static func restoreCloudSessionIfNeeded() async {
+        guard SyncSupabase.isConfigured else { return }
+        if let session = await SyncSupabase.restoreSession() {
+            UserDefaults.standard.set(session.userID, forKey: userIDKey)
         }
     }
 }
@@ -69,6 +86,7 @@ struct SignInView: View {
     @AppStorage(AccountSession.nameKey) private var displayName = ""
     @State private var errorText: String?
     @State private var isWorking = false
+    @State private var currentNonce: String?
 
     var body: some View {
         ZStack {
@@ -85,7 +103,9 @@ struct SignInView: View {
                     .font(.system(size: 32, weight: .semibold, design: .serif))
                     .foregroundStyle(SyncTheme.ink)
                     .multilineTextAlignment(.center)
-                Text("Your library lives in iCloud on this Apple ID, including saved videos. Sign in so it follows you when you log out and back in.")
+                Text(SyncSupabase.isConfigured
+                     ? "Sign in with Apple to sync your library through your account."
+                     : "Your library lives in iCloud on this Apple ID. Add Supabase keys to also sync to the cloud.")
                     .font(.system(size: 16))
                     .foregroundStyle(SyncTheme.inkMuted)
                     .multilineTextAlignment(.center)
@@ -104,28 +124,18 @@ struct SignInView: View {
                 Spacer()
 
                 SignInWithAppleButton(.signIn) { request in
-                    request.requestedScopes = [.fullName]
+                    let nonce = randomNonce()
+                    currentNonce = nonce
+                    request.requestedScopes = [.fullName, .email]
+                    request.nonce = sha256(nonce)
                     isWorking = true
                     errorText = nil
                 } onCompletion: { result in
-                    isWorking = false
                     switch result {
                     case .success(let authorization):
-                        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
-                            errorText = "Apple didn’t return a usable sign-in. Try again."
-                            return
-                        }
-                        // Write through @AppStorage so RootView leaves this screen immediately.
-                        userID = credential.user
-                        let name = [credential.fullName?.givenName, credential.fullName?.familyName]
-                            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                            .filter { !$0.isEmpty }
-                            .joined(separator: " ")
-                        if !name.isEmpty {
-                            displayName = name
-                        }
-                        AccountSession.apply(userID: credential.user, fullName: credential.fullName)
+                        Task { await handleApple(authorization) }
                     case .failure(let error):
+                        isWorking = false
                         let ns = error as NSError
                         if ns.domain == ASAuthorizationError.errorDomain,
                            ns.code == ASAuthorizationError.canceled.rawValue {
@@ -143,6 +153,52 @@ struct SignInView: View {
                 .padding(.bottom, 40)
             }
         }
+    }
+
+    @MainActor
+    private func handleApple(_ authorization: ASAuthorization) async {
+        defer { isWorking = false }
+        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+            errorText = "Apple didn’t return a usable sign-in. Try again."
+            return
+        }
+
+        let name = [credential.fullName?.givenName, credential.fullName?.familyName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if !name.isEmpty {
+            displayName = name
+        }
+
+        if SyncSupabase.isConfigured {
+            guard
+                let tokenData = credential.identityToken,
+                let idToken = String(data: tokenData, encoding: .utf8)
+            else {
+                errorText = "Apple didn’t return an identity token. Try again."
+                return
+            }
+            do {
+                let session = try await SyncSupabase.signInWithApple(
+                    idToken: idToken,
+                    nonce: currentNonce
+                )
+                userID = session.userID
+                AccountSession.apply(
+                    userID: session.userID,
+                    fullName: credential.fullName,
+                    appleUserID: credential.user
+                )
+            } catch {
+                errorText = error.localizedDescription
+            }
+            return
+        }
+
+        // Local-only fallback when Supabase keys aren’t set yet.
+        userID = credential.user
+        AccountSession.applyLocalApple(authorization)
     }
 
     private func appleErrorMessage(_ error: Error) -> String {
@@ -164,6 +220,28 @@ struct SignInView: View {
             }
         }
         return error.localizedDescription
+    }
+
+    private func randomNonce(length: Int = 32) -> String {
+        let charset = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var result = ""
+        var remaining = length
+        while remaining > 0 {
+            var random: UInt8 = 0
+            let status = SecRandomCopyBytes(kSecRandomDefault, 1, &random)
+            if status != errSecSuccess { continue }
+            if random < charset.count {
+                result.append(charset[Int(random)])
+                remaining -= 1
+            }
+        }
+        return result
+    }
+
+    private func sha256(_ input: String) -> String {
+        let data = Data(input.utf8)
+        let hash = SHA256.hash(data: data)
+        return hash.map { String(format: "%02x", $0) }.joined()
     }
 }
 
