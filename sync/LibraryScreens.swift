@@ -718,10 +718,9 @@ struct SettingsView: View {
                 }
                 .confirmationDialog("Sign out?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
                     Button("Sign out", role: .destructive) {
-                        displayName = ""
+                        AccountSession.signOut()
                         userID = ""
-                        UserDefaults.standard.removeObject(forKey: AccountSession.usernameKey)
-                        UserDefaults.standard.removeObject(forKey: AccountSession.bioKey)
+                        displayName = ""
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {

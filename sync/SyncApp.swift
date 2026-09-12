@@ -17,6 +17,7 @@ struct SyncApp: App {
 
 struct RootView: View {
     @AppStorage(AccountSession.userIDKey) private var userID = ""
+    @AppStorage(AccountSession.onboardingKey) private var hasCompletedOnboarding = false
     @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.dark.rawValue
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
@@ -36,6 +37,14 @@ struct RootView: View {
                 SignInView()
                     .preferredColorScheme(appearance.colorScheme)
                     .transition(.opacity)
+            } else if !hasCompletedOnboarding {
+                OnboardingView {
+                    withAnimation(.easeInOut(duration: 0.35)) {
+                        hasCompletedOnboarding = true
+                    }
+                }
+                .preferredColorScheme(appearance.colorScheme)
+                .transition(.opacity)
             } else {
                 HomeView()
                     .transition(.opacity)
@@ -43,6 +52,7 @@ struct RootView: View {
         }
         .animation(.easeInOut(duration: 0.45), value: showSplash)
         .animation(.easeInOut(duration: 0.45), value: userID)
+        .animation(.easeInOut(duration: 0.45), value: hasCompletedOnboarding)
         .tint(SyncTheme.ink)
         .task {
             try? await Task.sleep(for: .milliseconds(1100))
@@ -55,6 +65,9 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                if !userID.isEmpty {
+                    AccountSession.refreshCredentialState(for: userID)
+                }
                 CaptureService.importInbox(into: modelContext)
                 CaptureService.enrichUnprocessed(in: modelContext)
                 syncLibraryMedia()
@@ -64,6 +77,9 @@ struct RootView: View {
             }
         }
         .onAppear {
+            if !userID.isEmpty {
+                AccountSession.refreshCredentialState(for: userID)
+            }
             DemoLibraryPurge.run(in: modelContext)
             drainPending(into: modelContext)
             syncLibraryMedia()
