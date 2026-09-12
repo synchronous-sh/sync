@@ -70,7 +70,7 @@ npx supabase db push
 
 ### Google
 1. Opens Google via `ASWebAuthenticationSession` (PKCE)  
-2. Callback `synchronous://auth?code=…`  
+2. Callback `curious://auth?code=…` (matches the shared Expo Supabase allow list)  
 3. `POST /auth/v1/token?grant_type=pkce`  
 4. Session saved in Keychain  
 

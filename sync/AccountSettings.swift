@@ -175,15 +175,6 @@ struct SignInView: View {
                 .disabled(isWorking)
                 .opacity(isWorking ? 0.7 : 1)
 
-                Text(SyncSupabase.isConfigured
-                     ? "Apple and Google both create a Supabase account session."
-                     : "Add your Supabase URL + anon key in SupabaseKeys.swift to turn on Google and cloud sync.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(SyncTheme.inkMuted)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 10)
-                    .padding(.horizontal, 28)
-
                 Spacer().frame(height: 40)
             }
         }
