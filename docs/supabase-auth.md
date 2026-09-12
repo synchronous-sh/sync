@@ -4,7 +4,14 @@ The iOS app signs into the same Supabase project with Apple or Google.
 
 ## 1. Keys in the app
 
-Copy values into `sync/SupabaseKeys.swift` (see `SupabaseKeys.example.swift`):
+Edit `sync/SupabaseKeys.swift`:
+
+```swift
+enum SupabaseKeys {
+    static let url = "https://YOUR_PROJECT.supabase.co"
+    static let anonKey = "your_anon_key"
+}
+```
 
 - **URL** — Project Settings → API → Project URL  
 - **anon key** — Project Settings → API → `anon` `public`
@@ -12,7 +19,7 @@ Copy values into `sync/SupabaseKeys.swift` (see `SupabaseKeys.example.swift`):
 If both are empty:
 
 - Apple stays local-only (device session)
-- Google stays disabled until keys are set
+- Google needs keys before it can complete sign-in
 
 ## 2. Enable Apple
 

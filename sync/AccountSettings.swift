@@ -239,7 +239,7 @@ struct SignInView: View {
     private func handleGoogle() async {
         errorText = nil
         guard SyncSupabase.isConfigured else {
-            errorText = "Add your Supabase URL and anon key to SupabaseKeys.swift (see SupabaseKeys.example.swift), then rebuild."
+            errorText = "Add your Supabase URL and anon key to SupabaseKeys.swift, then rebuild."
             return
         }
         isWorking = true
