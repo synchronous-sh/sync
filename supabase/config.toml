@@ -9,8 +9,8 @@ extra_search_path = ["public", "extensions"]
 
 [auth]
 enabled = true
-site_url = "synchronous://auth"
-additional_redirect_urls = ["synchronous://**", "https://synchronous.sh/**"]
+site_url = "curious://auth"
+additional_redirect_urls = ["curious://**", "curious://auth", "synchronous://**", "synchronous://auth", "https://synchronous.sh/**"]
 enable_anonymous_sign_ins = true
 
 [auth.email]

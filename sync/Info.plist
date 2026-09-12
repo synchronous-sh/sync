@@ -11,6 +11,7 @@
 			<string>sh.synchronous.sync</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>curious</string>
 				<string>synchronous</string>
 			</array>
 		</dict>

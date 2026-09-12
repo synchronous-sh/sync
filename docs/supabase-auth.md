@@ -37,12 +37,20 @@ If both are empty:
 
 ## 4. Redirect URLs (Supabase dashboard)
 
-Authentication → URL Configuration → Redirect URLs:
+The Expo / Curious app used scheme **`curious`**. If this Swift app shares that Supabase project and Site URL is still `curious://auth`, Google will open Expo unless the redirect matches an allow-listed URL.
 
-- `synchronous://auth`
-- `synchronous://**`
+**This app’s OAuth callback is `curious://auth`** (same as Expo) so a shared project works without dashboard changes. `Info.plist` registers both `curious` and `synchronous`.
 
-The app uses `synchronous://auth` for the Google OAuth callback (`Info.plist` already registers the `synchronous` URL scheme).
+Authentication → URL Configuration should include:
+
+- **Site URL:** `curious://auth` (existing Expo default) — or switch to `synchronous://auth` when you own the project and update the app constant to match
+- **Redirect URLs:**
+  - `curious://auth`
+  - `curious://**`
+  - `synchronous://auth` (optional, for a later cutover)
+  - `synchronous://**`
+
+If Google still opens Expo: Site URL / allow list still points at Expo Go (`exp://…`). Add `curious://auth` (and remove or demote the Expo Go Site URL), then retry.
 
 ## 5. Schema
 
