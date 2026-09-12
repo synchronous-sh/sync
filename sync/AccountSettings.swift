@@ -172,17 +172,17 @@ struct SignInView: View {
                 }
                 .padding(.horizontal, 28)
                 .padding(.top, 12)
-                .disabled(isWorking || !SyncSupabase.isConfigured)
-                .opacity((isWorking || !SyncSupabase.isConfigured) ? 0.55 : 1)
+                .disabled(isWorking)
+                .opacity(isWorking ? 0.7 : 1)
 
-                if !SyncSupabase.isConfigured {
-                    Text("Google needs Supabase keys in SupabaseKeys.swift.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(SyncTheme.inkMuted)
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 10)
-                        .padding(.horizontal, 28)
-                }
+                Text(SyncSupabase.isConfigured
+                     ? "Apple and Google both create a Supabase account session."
+                     : "Add your Supabase URL + anon key in SupabaseKeys.swift to turn on Google and cloud sync.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(SyncTheme.inkMuted)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 10)
+                    .padding(.horizontal, 28)
 
                 Spacer().frame(height: 40)
             }
@@ -238,6 +238,10 @@ struct SignInView: View {
     @MainActor
     private func handleGoogle() async {
         errorText = nil
+        guard SyncSupabase.isConfigured else {
+            errorText = "Add your Supabase URL and anon key to SupabaseKeys.swift (see SupabaseKeys.example.swift), then rebuild."
+            return
+        }
         isWorking = true
         defer { isWorking = false }
         do {
