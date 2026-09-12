@@ -1,9 +1,14 @@
 import Foundation
 import Security
+import AuthenticationServices
+import CryptoKit
+import UIKit
 
-/// Thin Supabase Auth client for Sign in with Apple (id_token grant).
+/// Thin Supabase Auth client (Apple id_token + Google OAuth PKCE).
 /// Uses the Auth REST API so we don't need the SPM package resolved to ship login.
 enum SyncSupabase {
+    static let redirectURL = URL(string: "synchronous://auth")!
+
     struct Session: Codable, Equatable {
         var accessToken: String
         var refreshToken: String
@@ -47,9 +52,7 @@ enum SyncSupabase {
     // MARK: - Auth
 
     static func signInWithApple(idToken: String, nonce: String? = nil) async throws -> Session {
-        guard isConfigured else {
-            throw AuthError.notConfigured
-        }
+        guard isConfigured else { throw AuthError.notConfigured }
         var body: [String: Any] = [
             "provider": "apple",
             "id_token": idToken,
@@ -60,6 +63,44 @@ enum SyncSupabase {
         let json = try await post(
             path: "/auth/v1/token?grant_type=id_token",
             body: body,
+            authorized: false
+        )
+        return try session(from: json)
+    }
+
+    /// Opens Google in an auth session, then exchanges the PKCE code for a Supabase session.
+    @MainActor
+    static func signInWithGoogle() async throws -> Session {
+        guard isConfigured else { throw AuthError.notConfigured }
+
+        let verifier = randomVerifier()
+        let challenge = base64URLEncoded(sha256(verifier))
+        let root = SupabaseKeys.url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        var components = URLComponents(string: root + "/auth/v1/authorize")
+        components?.queryItems = [
+            URLQueryItem(name: "provider", value: "google"),
+            URLQueryItem(name: "redirect_to", value: redirectURL.absoluteString),
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge_method", value: "s256"),
+        ]
+        guard let authURL = components?.url else { throw AuthError.badResponse }
+
+        let callbackURL = try await openAuthSession(url: authURL, callbackScheme: "synchronous")
+        if let error = queryValue("error_description", in: callbackURL)
+            ?? queryValue("error", in: callbackURL) {
+            throw AuthError.server(error.replacingOccurrences(of: "+", with: " "))
+        }
+        guard let code = queryValue("code", in: callbackURL), !code.isEmpty else {
+            throw AuthError.server("Google sign-in didn’t return an auth code.")
+        }
+
+        let json = try await post(
+            path: "/auth/v1/token?grant_type=pkce",
+            body: [
+                "auth_code": code,
+                "code_verifier": verifier,
+            ],
             authorized: false
         )
         return try session(from: json)
@@ -91,11 +132,12 @@ enum SyncSupabase {
         clearSession()
     }
 
-    // MARK: - Types
+    // MARK: - Errors
 
     enum AuthError: LocalizedError {
         case notConfigured
         case badResponse
+        case canceled
         case server(String)
 
         var errorDescription: String? {
@@ -104,6 +146,8 @@ enum SyncSupabase {
                 return "Add your Supabase URL and anon key to SupabaseKeys.swift (see SupabaseKeys.example.swift)."
             case .badResponse:
                 return "Supabase returned an unreadable auth response."
+            case .canceled:
+                return nil
             case .server(let message):
                 return message
             }
@@ -167,16 +211,92 @@ enum SyncSupabase {
             throw AuthError.badResponse
         }
         let expiresIn = (json["expires_in"] as? Int) ?? 3600
-        let email = user["email"] as? String
-        let session = Session(
+        let built = Session(
             accessToken: access,
             refreshToken: refresh,
             userID: userID,
-            email: email,
+            email: user["email"] as? String,
             expiresAt: Date().addingTimeInterval(TimeInterval(expiresIn))
         )
-        currentSession = session
-        return session
+        currentSession = built
+        return built
+    }
+
+    // MARK: - OAuth helpers
+
+    @MainActor
+    private static func openAuthSession(url: URL, callbackScheme: String) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            let session = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: callbackScheme
+            ) { callbackURL, error in
+                if let error {
+                    let ns = error as NSError
+                    if ns.domain == ASWebAuthenticationSessionError.errorDomain,
+                       ns.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                        continuation.resume(throwing: AuthError.canceled)
+                    } else {
+                        continuation.resume(throwing: error)
+                    }
+                    return
+                }
+                guard let callbackURL else {
+                    continuation.resume(throwing: AuthError.badResponse)
+                    return
+                }
+                continuation.resume(returning: callbackURL)
+            }
+            session.presentationContextProvider = AuthPresentationAnchor.shared
+            session.prefersEphemeralWebBrowserSession = false
+            if !session.start() {
+                continuation.resume(throwing: AuthError.server("Couldn’t open Google sign-in."))
+            }
+        }
+    }
+
+    private static func queryValue(_ name: String, in url: URL) -> String? {
+        if let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first(where: { $0.name == name })?
+            .value {
+            return value
+        }
+        guard let fragment = URLComponents(url: url, resolvingAgainstBaseURL: false)?.fragment else {
+            return nil
+        }
+        return fragment
+            .split(separator: "&")
+            .compactMap { part -> (String, String)? in
+                let bits = part.split(separator: "=", maxSplits: 1).map(String.init)
+                guard bits.count == 2 else { return nil }
+                return (bits[0], bits[1].removingPercentEncoding ?? bits[1])
+            }
+            .first { $0.0 == name }?
+            .1
+    }
+
+    private static func randomVerifier(length: Int = 64) -> String {
+        let charset = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+        var value = ""
+        value.reserveCapacity(length)
+        for _ in 0..<length {
+            var byte: UInt8 = 0
+            _ = SecRandomCopyBytes(kSecRandomDefault, 1, &byte)
+            value.append(charset[Int(byte) % charset.count])
+        }
+        return value
+    }
+
+    private static func sha256(_ input: String) -> Data {
+        Data(SHA256.hash(data: Data(input.utf8)))
+    }
+
+    private static func base64URLEncoded(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 
     // MARK: - Keychain
@@ -216,5 +336,18 @@ enum SyncSupabase {
             kSecAttrAccount as String: sessionKey,
         ]
         SecItemDelete(query as CFDictionary)
+    }
+}
+
+@MainActor
+private final class AuthPresentationAnchor: NSObject, ASWebAuthenticationPresentationContextProviding {
+    static let shared = AuthPresentationAnchor()
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        if let key = scenes.flatMap(\.windows).first(where: \.isKeyWindow) {
+            return key
+        }
+        return scenes.flatMap(\.windows).first ?? ASPresentationAnchor()
     }
 }

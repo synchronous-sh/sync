@@ -104,8 +104,8 @@ struct SignInView: View {
                     .foregroundStyle(SyncTheme.ink)
                     .multilineTextAlignment(.center)
                 Text(SyncSupabase.isConfigured
-                     ? "Sign in with Apple to sync your library through your account."
-                     : "Your library lives in iCloud on this Apple ID. Add Supabase keys to also sync to the cloud.")
+                     ? "Sign in with Apple or Google to sync your library through your account."
+                     : "Your library lives in iCloud on this Apple ID. Add Supabase keys to enable Google and cloud sync.")
                     .font(.system(size: 16))
                     .foregroundStyle(SyncTheme.inkMuted)
                     .multilineTextAlignment(.center)
@@ -150,7 +150,41 @@ struct SignInView: View {
                 .padding(.horizontal, 28)
                 .disabled(isWorking)
                 .opacity(isWorking ? 0.7 : 1)
-                .padding(.bottom, 40)
+
+                Button {
+                    Task { await handleGoogle() }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "g.circle.fill")
+                            .font(.system(size: 20, weight: .semibold))
+                        Text("Continue with Google")
+                            .font(.system(size: 17, weight: .semibold))
+                    }
+                    .foregroundStyle(SyncTheme.ink)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(SyncTheme.paperRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(SyncTheme.line, lineWidth: 1)
+                    )
+                }
+                .padding(.horizontal, 28)
+                .padding(.top, 12)
+                .disabled(isWorking || !SyncSupabase.isConfigured)
+                .opacity((isWorking || !SyncSupabase.isConfigured) ? 0.55 : 1)
+
+                if !SyncSupabase.isConfigured {
+                    Text("Google needs Supabase keys in SupabaseKeys.swift.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(SyncTheme.inkMuted)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 10)
+                        .padding(.horizontal, 28)
+                }
+
+                Spacer().frame(height: 40)
             }
         }
     }
@@ -199,6 +233,26 @@ struct SignInView: View {
         // Local-only fallback when Supabase keys aren’t set yet.
         userID = credential.user
         AccountSession.applyLocalApple(authorization)
+    }
+
+    @MainActor
+    private func handleGoogle() async {
+        errorText = nil
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let session = try await SyncSupabase.signInWithGoogle()
+            if let email = session.email, displayName.isEmpty {
+                displayName = email.split(separator: "@").first.map(String.init) ?? email
+            }
+            userID = session.userID
+            AccountSession.apply(userID: session.userID, fullName: nil)
+        } catch {
+            if let auth = error as? SyncSupabase.AuthError, case .canceled = auth {
+                return
+            }
+            errorText = error.localizedDescription
+        }
     }
 
     private func appleErrorMessage(_ error: Error) -> String {
