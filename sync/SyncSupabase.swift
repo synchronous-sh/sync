@@ -8,11 +8,9 @@ import UIKit
 /// Uses the Auth REST API so we don't need the SPM package resolved to ship login.
 enum SyncSupabase {
     /// Must match a Redirect URL allow-listed in the Supabase project.
-    /// Friend’s Expo app used scheme `curious` (`curious://auth`); until Site URL /
-    /// Redirect URLs are updated for this Swift app, OAuth must use that same URL
-    /// or Supabase falls back to the Expo deep link.
-    static let redirectURL = URL(string: "curious://auth")!
-    static let redirectScheme = "curious"
+    /// Site URL / Redirect URLs should use this scheme (not the old Expo `curious://`).
+    static let redirectURL = URL(string: "synchronous://auth")!
+    static let redirectScheme = "synchronous"
 
     struct Session: Codable, Equatable {
         var accessToken: String

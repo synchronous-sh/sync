@@ -9,15 +9,15 @@ extra_search_path = ["public", "extensions"]
 
 [auth]
 enabled = true
-site_url = "curious://auth"
-additional_redirect_urls = ["curious://**", "curious://auth", "synchronous://**", "synchronous://auth", "https://synchronous.sh/**"]
+site_url = "synchronous://auth"
+additional_redirect_urls = ["synchronous://**", "synchronous://auth", "https://synchronous.sh/**"]
 enable_anonymous_sign_ins = true
 
 # Native Sign in with Apple (id_token). No Services ID / secret needed for iOS-only.
 # Dashboard: Authentication → Providers → Apple → enable, Client IDs = this list.
 [auth.external.apple]
 enabled = true
-client_id = "sh.synchronous.sync, com.rahulpalle.curious"
+client_id = "sh.synchronous.sync"
 secret = ""
 
 [auth.email]

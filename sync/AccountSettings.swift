@@ -155,8 +155,8 @@ struct SignInView: View {
                     Task { await handleGoogle() }
                 } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: "g.circle.fill")
-                            .font(.system(size: 20, weight: .semibold))
+                        GoogleMark()
+                            .frame(width: 20, height: 20)
                         Text("Continue with Google")
                             .font(.system(size: 17, weight: .semibold))
                     }
@@ -390,5 +390,44 @@ struct AccountProfileView: View {
     private var initial: String {
         let source = displayName.isEmpty ? "Y" : displayName
         return String(source.prefix(1)).uppercased()
+    }
+}
+
+/// Multicolor Google “G” mark for the sign-in button.
+private struct GoogleMark: View {
+    var body: some View {
+        Canvas { context, size in
+            let s = min(size.width, size.height)
+            let scale = s / 48
+            let origin = CGPoint(x: (size.width - s) / 2, y: (size.height - s) / 2)
+
+            func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: origin.x + x * scale, y: origin.y + y * scale)
+            }
+
+            let center = p(24, 24)
+            let radius = 16.5 * scale
+            let lineWidth = 5.5 * scale
+
+            func strokeArc(start: Angle, end: Angle, color: Color) {
+                var path = Path()
+                path.addArc(center: center, radius: radius, startAngle: start, endAngle: end, clockwise: false)
+                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
+            }
+
+            strokeArc(start: .degrees(-40), end: .degrees(50), color: Color(red: 234 / 255, green: 67 / 255, blue: 53 / 255))
+            strokeArc(start: .degrees(50), end: .degrees(125), color: Color(red: 251 / 255, green: 188 / 255, blue: 5 / 255))
+            strokeArc(start: .degrees(125), end: .degrees(235), color: Color(red: 52 / 255, green: 168 / 255, blue: 83 / 255))
+            strokeArc(start: .degrees(235), end: .degrees(320), color: Color(red: 66 / 255, green: 133 / 255, blue: 244 / 255))
+
+            var bar = Path()
+            bar.move(to: p(24, 21.2))
+            bar.addLine(to: p(43.2, 21.2))
+            bar.addLine(to: p(43.2, 26.8))
+            bar.addLine(to: p(24, 26.8))
+            bar.closeSubpath()
+            context.fill(bar, with: .color(Color(red: 66 / 255, green: 133 / 255, blue: 244 / 255)))
+        }
+        .accessibilityHidden(true)
     }
 }

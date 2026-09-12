@@ -26,18 +26,9 @@ If both are empty:
 Do this in the **shared Supabase project** (dashboard — cannot be done from the iOS app alone):
 
 1. **Authentication → Providers → Apple** → toggle **Enable**
-2. **Client IDs** (comma-separated), include this app’s bundle ID:
-
-   ```
-   sh.synchronous.sync, com.rahulpalle.curious
-   ```
-
-   - `sh.synchronous.sync` — this Swift app (`PRODUCT_BUNDLE_IDENTIFIER`)
-   - `com.rahulpalle.curious` — keep if Expo/Curious still signs in on the same project
-
+2. **Client IDs**: `sh.synchronous.sync` (this app’s `PRODUCT_BUNDLE_IDENTIFIER`)
 3. Leave **Secret Key** empty for native iOS-only Sign in with Apple  
    (no Services ID / `.p8` needed unless you also use Apple on web)
-
 4. Save
 
 If Apple works locally but fails after keys are set, the usual cause is a missing Client ID — Supabase rejects the token audience.
@@ -52,20 +43,16 @@ If Apple works locally but fails after keys are set, the usual cause is a missin
 
 ## 4. Redirect URLs (Supabase dashboard)
 
-The Expo / Curious app used scheme **`curious`**. If this Swift app shares that Supabase project and Site URL is still `curious://auth`, Google will open Expo unless the redirect matches an allow-listed URL.
+This app’s URL scheme is **`synchronous`** (bundle ID `sh.synchronous.sync`). OAuth callback: `synchronous://auth`.
 
-**This app’s OAuth callback is `curious://auth`** (same as Expo) so a shared project works without dashboard changes. `Info.plist` registers both `curious` and `synchronous`.
+Authentication → URL Configuration:
 
-Authentication → URL Configuration should include:
-
-- **Site URL:** `curious://auth` (existing Expo default) — or switch to `synchronous://auth` when you own the project and update the app constant to match
+- **Site URL:** `synchronous://auth`
 - **Redirect URLs:**
-  - `curious://auth`
-  - `curious://**`
-  - `synchronous://auth` (optional, for a later cutover)
+  - `synchronous://auth`
   - `synchronous://**`
 
-If Google still opens Expo: Site URL / allow list still points at Expo Go (`exp://…`). Add `curious://auth` (and remove or demote the Expo Go Site URL), then retry.
+Remove or demote old Expo values (`curious://…`, `exp://…`) so Google does not open the Expo app after sign-in.
 
 ## 5. Schema
 
@@ -85,7 +72,7 @@ npx supabase db push
 
 ### Google
 1. Opens Google via `ASWebAuthenticationSession` (PKCE)  
-2. Callback `curious://auth?code=…` (matches the shared Expo Supabase allow list)  
+2. Callback `synchronous://auth?code=…`  
 3. `POST /auth/v1/token?grant_type=pkce`  
 4. Session saved in Keychain  
 
