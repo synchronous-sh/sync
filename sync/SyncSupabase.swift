@@ -143,7 +143,7 @@ enum SyncSupabase {
         var errorDescription: String? {
             switch self {
             case .notConfigured:
-                return "Add your Supabase URL and anon key to SupabaseKeys.swift (see SupabaseKeys.example.swift)."
+                return "Add your Supabase URL and anon key to SupabaseKeys.swift."
             case .badResponse:
                 return "Supabase returned an unreadable auth response."
             case .canceled:
