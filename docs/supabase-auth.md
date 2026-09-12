@@ -21,11 +21,26 @@ If both are empty:
 - Apple stays local-only (device session)
 - Google needs keys before it can complete sign-in
 
-## 2. Enable Apple
+## 2. Enable Apple (required for cloud Apple sign-in)
 
-1. Authentication → Providers → **Apple** → enable  
-2. **Client IDs**: add `sh.synchronous.sync`  
-3. Native Sign in with Apple usually needs no secret
+Do this in the **shared Supabase project** (dashboard — cannot be done from the iOS app alone):
+
+1. **Authentication → Providers → Apple** → toggle **Enable**
+2. **Client IDs** (comma-separated), include this app’s bundle ID:
+
+   ```
+   sh.synchronous.sync, com.rahulpalle.curious
+   ```
+
+   - `sh.synchronous.sync` — this Swift app (`PRODUCT_BUNDLE_IDENTIFIER`)
+   - `com.rahulpalle.curious` — keep if Expo/Curious still signs in on the same project
+
+3. Leave **Secret Key** empty for native iOS-only Sign in with Apple  
+   (no Services ID / `.p8` needed unless you also use Apple on web)
+
+4. Save
+
+If Apple works locally but fails after keys are set, the usual cause is a missing Client ID — Supabase rejects the token audience.
 
 ## 3. Enable Google
 
